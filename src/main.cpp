@@ -570,7 +570,8 @@ static void drawDecoders(App& app)
     ImGui::Begin("Decoders");
 
     auto decs = app.decoders.status();
-    ImGui::Text("%d active on %d threads", (int)decs.size(), app.decoders.workerCount());
+    ImGui::Text("%d active  |  %d sub-band(s)  %d threads", (int)decs.size(),
+                app.decoders.subbandCount(), app.decoders.workerCount());
     uint64_t drops = app.decoders.drops();
     ImGui::SameLine();
     if (drops > 0)

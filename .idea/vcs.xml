@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="VcsDirectoryMappings">
+    <mapping directory="$PROJECT_DIR$" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/reference/JAERO" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/reference/SDRPlusPlus" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/reference/inmarsat-sniffer" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/reference/libaeroambe" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/reference/mbelib" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/third_party/imgui" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/third_party/implot" vcs="Git" />
+  </component>
+</project>

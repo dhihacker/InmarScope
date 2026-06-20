@@ -1,0 +1,69 @@
+// A single-channel decoder: DDC -> JAERO continuous MSK demod -> AeroL.
+// ACARS frames are pushed to a MessageLog.
+#pragma once
+
+#include "decode/message_log.h"
+#include "dsp/ddc.h"
+
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <vector>
+
+struct jaero_pmsk_demod;       // from jaero_demod.h
+struct jaero_oqpsk_cont_demod; // from jaero_demod.h
+
+class Decoder
+{
+public:
+    // subRate/subCenterHz describe the shared front-end sub-band stream this
+    // decoder consumes; chanFreqHz is the absolute channel frequency.
+    Decoder(double subRate, double subCenterHz, double chanFreqHz, int baud,
+            int channelId, MessageLog* log, MessageLog* suLog);
+    ~Decoder();
+
+    // Process a block of sub-band interleaved double IQ (decode thread).
+    void process(const double* iq, int nComplex);
+
+    // Retune to a new absolute channel frequency (Hz).
+    void setFreq(double chanFreqHz);
+
+    bool   locked() const;
+    double ebno() const;
+    double mse() const;
+    // Copy up to maxPairs constellation points (interleaved I,Q doubles into
+    // iqOut, capacity >= 2*maxPairs). Returns the number of pairs written.
+    int    getConstellation(double* iqOut, int maxPairs) const;
+    double freqMHz() const { return chanFreqHz_ / 1e6; }
+    int    baud() const { return baud_; }
+    int    channelId() const { return channelId_; }
+    uint64_t msgCount() const { return msgCount_.load(); }
+
+private:
+    static void acarsTrampoline(const uint8_t* data, int len, int channel_id,
+                                uint32_t aes_id, uint8_t ges_id, uint8_t qno,
+                                uint8_t refno, int downlink, void* user);
+    void onAcars(const uint8_t* data, int len, uint32_t aes_id, uint8_t ges_id,
+                 int downlink);
+    static void decodedTrampoline(const uint8_t* data, int len, int channel_id,
+                                  void* user);
+    void onDecoded(const uint8_t* data, int len);
+    static void cassignTrampoline(int channel_id, uint8_t type, uint32_t aes_id,
+                                  uint8_t ges_id, double rx_mhz, double tx_mhz,
+                                  void* user);
+    void onCassign(uint8_t type, uint32_t aes_id, uint8_t ges_id, double rx_mhz,
+                   double tx_mhz);
+
+    Ddc ddc_;
+    jaero_pmsk_demod* pmsk_ = nullptr;
+    jaero_oqpsk_cont_demod* oqpsk_ = nullptr;
+    std::vector<double> ddcOut_;
+    MessageLog* log_;
+    MessageLog* suLog_;
+
+    double subCenterHz_;
+    double chanFreqHz_;
+    int baud_;
+    int channelId_;
+    std::atomic<uint64_t> msgCount_{0};
+};
