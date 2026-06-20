@@ -22,7 +22,8 @@ public:
     // subRate/subCenterHz describe the shared front-end sub-band stream this
     // decoder consumes; chanFreqHz is the absolute channel frequency.
     Decoder(double subRate, double subCenterHz, double chanFreqHz, int baud,
-            int channelId, MessageLog* log, MessageLog* suLog, AudioOutput* audioSink);
+            int channelId, MessageLog* log, MessageLog* suLog, AudioOutput* audioSink,
+            CassignLog* cassignLog);
     ~Decoder();
 
     // Process a block of sub-band interleaved double IQ (decode thread).
@@ -72,6 +73,7 @@ private:
     std::vector<double> ddcOut_;
     MessageLog* log_;
     MessageLog* suLog_;
+    CassignLog* cassignLog_;
 
     double subCenterHz_;
     double chanFreqHz_;

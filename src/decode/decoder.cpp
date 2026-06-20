@@ -68,10 +68,12 @@ static const char* suTypeName(uint8_t t)
 }
 
 Decoder::Decoder(double subRate, double subCenterHz, double chanFreqHz, int baud,
-                 int channelId, MessageLog* log, MessageLog* suLog, AudioOutput* audioSink)
+                 int channelId, MessageLog* log, MessageLog* suLog, AudioOutput* audioSink,
+                 CassignLog* cassignLog)
     : ddc_(subRate, chanFreqHz - subCenterHz, ddcRate(baud), ddcBw(baud)),
       log_(log),
       suLog_(suLog),
+      cassignLog_(cassignLog),
       subCenterHz_(subCenterHz),
       chanFreqHz_(chanFreqHz),
       baud_(baud),
@@ -278,19 +280,16 @@ void Decoder::cassignTrampoline(int, uint8_t type, uint32_t aes_id, uint8_t ges_
 void Decoder::onCassign(uint8_t type, uint32_t aes_id, uint8_t ges_id,
                         double rx_mhz, double tx_mhz)
 {
-    if (!suLog_)
+    if (!cassignLog_)
         return;
-    DecodedMessage m;
-    m.channelId = channelId_;
-    m.freqMHz = chanFreqHz_ / 1e6;
-    m.aesId = aes_id;
-    m.gesId = ges_id;
-    char buf[160];
-    std::snprintf(buf, sizeof(buf),
-                  "C-CHANNEL ASSIGN type=0x%02X  AES=%06X GES=%02X  RX=%.4f MHz  TX=%.4f MHz",
-                  type, aes_id, ges_id, rx_mhz, tx_mhz);
-    m.text = buf;
-    suLog_->add(m);
+    CassignEntry e;
+    e.channelId = channelId_;
+    e.type = type;
+    e.aesId = aes_id;
+    e.gesId = ges_id;
+    e.rxMHz = rx_mhz;
+    e.txMHz = tx_mhz;
+    cassignLog_->add(e);
 }
 
 void Decoder::voiceTrampoline(const uint8_t* frame, int len, int, void* user)

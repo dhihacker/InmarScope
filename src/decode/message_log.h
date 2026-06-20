@@ -57,3 +57,51 @@ private:
     std::vector<DecodedMessage> msgs_;
     uint64_t count_ = 0;
 };
+
+// A decoded C-channel (voice/data) assignment.
+struct CassignEntry
+{
+    int channelId = 0;
+    uint8_t type = 0;      // 0x31 distress .. 0x34 non-safety
+    uint32_t aesId = 0;
+    uint8_t gesId = 0;
+    double rxMHz = 0.0;    // aircraft receive (forward/downlink)
+    double txMHz = 0.0;    // aircraft transmit (return/uplink)
+};
+
+class CassignLog
+{
+public:
+    void add(const CassignEntry& e)
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        items_.push_back(e);
+        if (items_.size() > kMax)
+            items_.erase(items_.begin(), items_.begin() + (items_.size() - kMax));
+        ++count_;
+    }
+
+    std::vector<CassignEntry> snapshot()
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        return items_;
+    }
+
+    uint64_t count()
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        return count_;
+    }
+
+    void clear()
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        items_.clear();
+    }
+
+private:
+    static constexpr size_t kMax = 1000;
+    std::mutex mtx_;
+    std::vector<CassignEntry> items_;
+    uint64_t count_ = 0;
+};

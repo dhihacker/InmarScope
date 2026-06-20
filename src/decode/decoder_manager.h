@@ -52,6 +52,7 @@ public:
     uint64_t drops() const { return drops_.load(); }
     MessageLog& log() { return log_; }
     MessageLog& suLog() { return suLog_; }
+    CassignLog& cassignLog() { return cassign_; }
 
     // Voice: route one 8400 decoder's audio to the speakers.
     void setVoiceMonitor(int channelId);
@@ -101,6 +102,7 @@ private:
     static constexpr size_t kMaxQueue = 64;
     MessageLog log_;
     MessageLog suLog_;
+    CassignLog cassign_;
     AudioOutput audio_;
     int voiceMonitorId_ = -1;
 };

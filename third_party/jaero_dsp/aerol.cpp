@@ -1350,6 +1350,9 @@ std::vector<uint8_t> &AeroL::Decode(std::vector<short> &bits, bool soft)//0 bit 
 
                             if(crc_calc==crc_rec)
                             {
+                                // Emit each CRC-valid signal unit (12 bytes).
+                                if(decoded_callback)
+                                    decoded_callback((const uint8_t*)&infofield[k*12], 12, decoded_user);
 
                                 //processing P channel packets
                                 using namespace AEROTypeP;
@@ -1388,12 +1391,6 @@ std::vector<uint8_t> &AeroL::Decode(std::vector<short> &bits, bool soft)//0 bit 
 
                             }
 
-                        }
-
-                        /* emit decoded frame data via callback */
-                        if(decoded_callback && !infofield.empty())
-                        {
-                            decoded_callback(infofield.data(), (int)infofield.size(), decoded_user);
                         }
 
                     }

@@ -780,10 +780,60 @@ static void drawMessages(App& app)
     ImGui::End();
 }
 
-// Full-screen host window holding a locked dockspace. Builds a default
-// layout on first run (Control left, Spectrum top-right, Waterfall
-// bottom-right). Panels can't be undocked or closed; "View > Reset Layout"
-// restores the default.
+static const char* cassignTypeName(uint8_t t)
+{
+    switch (t)
+    {
+    case 0x31: return "Distress";
+    case 0x32: return "Flight safety";
+    case 0x33: return "Other safety";
+    case 0x34: return "Non-safety";
+    default: return "C-channel";
+    }
+}
+
+static void drawCChannel(App& app)
+{
+    ImGui::Begin("C-Channel");
+
+    ImGui::Text("%llu assignment(s)", (unsigned long long)app.decoders.cassignLog().count());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear"))
+        app.decoders.cassignLog().clear();
+    ImGui::Separator();
+
+    auto items = app.decoders.cassignLog().snapshot();
+    if (ImGui::BeginTable("##cchan", 5,
+                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable))
+    {
+        ImGui::TableSetupColumn("Type", ImGuiTableColumnFlags_WidthFixed, 96);
+        ImGui::TableSetupColumn("AES", ImGuiTableColumnFlags_WidthFixed, 64);
+        ImGui::TableSetupColumn("GES", ImGuiTableColumnFlags_WidthFixed, 40);
+        ImGui::TableSetupColumn("RX / down (MHz)");
+        ImGui::TableSetupColumn("TX / up (MHz)");
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableHeadersRow();
+
+        for (auto it = items.rbegin(); it != items.rend(); ++it)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(cassignTypeName(it->type));
+            ImGui::TableNextColumn();
+            ImGui::Text("%06X", it->aesId);
+            ImGui::TableNextColumn();
+            ImGui::Text("%02X", it->gesId);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.4f", it->rxMHz);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.4f", it->txMHz);
+        }
+        ImGui::EndTable();
+    }
+
+    ImGui::End();
+}
 static ImPlotPoint constGetter(int idx, void* data)
 {
     const float* p = static_cast<const float*>(data);
@@ -908,6 +958,7 @@ static void drawDockHost()
         ImGui::DockBuilderDockWindow("Waterfall", rmid);
         ImGui::DockBuilderDockWindow("SUs", rbot);
         ImGui::DockBuilderDockWindow("Messages", rbot);
+        ImGui::DockBuilderDockWindow("C-Channel", rbot);
         ImGui::DockBuilderDockWindow("Constellation", rcon);
         ImGui::DockBuilderFinish(dockId);
     }
@@ -981,6 +1032,7 @@ int main(int, char**)
         drawDecoders(app);
         drawSUs(app);
         drawMessages(app);
+        drawCChannel(app);
         drawConstellation(app);
 
         int display_w, display_h;
