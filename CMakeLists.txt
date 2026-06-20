@@ -108,6 +108,7 @@ add_executable(FrameSync
     src/main.cpp
     src/sdr/rtl_sdr_source.cpp
     src/sdr/wav_file_source.cpp
+    src/sdr/sdrpp_server_source.cpp
     src/gui/waterfall.cpp
     src/decode/decoder.cpp
     src/decode/decoder_manager.cpp
@@ -121,11 +122,12 @@ target_include_directories(FrameSync PRIVATE
     ${RTLSDR_INCLUDE_DIRS}
 )
 target_compile_definitions(FrameSync PRIVATE _USE_MATH_DEFINES)
-target_link_libraries(FrameSync PRIVATE imgui jaero_dsp mbelib ${RTLSDR_LIBRARIES})
+find_library(ZSTD_LIBRARIES NAMES zstd libzstd REQUIRED)
+target_link_libraries(FrameSync PRIVATE imgui jaero_dsp mbelib ${RTLSDR_LIBRARIES} ${ZSTD_LIBRARIES})
 target_link_directories(FrameSync PRIVATE ${RTLSDR_LIBRARY_DIRS})
 
 if(WIN32)
-    target_link_libraries(FrameSync PRIVATE opengl32 gdi32 comdlg32 ole32 winmm)
+    target_link_libraries(FrameSync PRIVATE opengl32 gdi32 comdlg32 ole32 winmm ws2_32)
 
     # Copy MinGW runtime DLLs next to the executable so it runs standalone
     # (PyCharm, double-click) without the MSYS2 bin dir on PATH.
@@ -137,6 +139,7 @@ if(WIN32)
         glfw3.dll
         librtlsdr.dll
         libusb-1.0.dll
+        libzstd.dll
     )
     foreach(dll ${FRAMESYNC_RUNTIME_DLLS})
         if(EXISTS "${MINGW_BIN}/${dll}")

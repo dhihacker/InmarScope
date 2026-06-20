@@ -13,15 +13,18 @@
 #include "dsp/jfft.h"
 #include "sdr/rtl_sdr_source.h"
 #include "sdr/wav_file_source.h"
+#include "sdr/sdrpp_server_source.h"
 #include "decode/decoder_manager.h"
 #include "gui/waterfall.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <complex>
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <thread>
 #include <vector>
 
 #if defined(_WIN32)
@@ -62,10 +65,15 @@ struct App
 {
     RtlSdrSource sdr;
     WavFileSource wav;
+    SdrppServerSource server;
     SdrSource* active = &sdr;   // currently selected/running source
-    int  sourceMode = 0;        // 0 = RTL-SDR, 1 = WAV file
+    int  sourceMode = 0;        // 0 = RTL-SDR, 1 = WAV file, 2 = SDR++ Server
     char wavPath[512] = "";
     bool wavLoop = true;
+    char serverHost[128] = "localhost";
+    int  serverPort = 5259;
+    bool serverCompression = true;
+    int  serverSampleType = 1;  // 0=int8, 1=int16, 2=float
 
     IqRing ring{1u << 21};
     JFFT fft;
@@ -261,13 +269,34 @@ static void startActive(App& app)
         app.sdr.setDcBlock(app.dcBlock);
         ok = app.sdr.start(app.deviceIndex, cb, err);
     }
-    else
+    else if (app.sourceMode == 1)
     {
         app.active = &app.wav;
         app.wav.setPath(app.wavPath);
         app.wav.setLoop(app.wavLoop);
         app.wav.setCenterFreq(app.centerFreqMHz * 1e6);
         ok = app.wav.start(0, cb, err);
+    }
+    else
+    {
+        app.active = &app.server;
+        app.server.setHost(app.serverHost);
+        app.server.setPort((uint16_t)app.serverPort);
+        app.server.setCompressionEnabled(app.serverCompression);
+        app.server.setSampleTypeIndex(app.serverSampleType);
+        app.server.setCenterFreq(app.centerFreqMHz * 1e6);
+        ok = app.server.start(0, cb, err);
+        if (ok)
+        {
+            // The server reports its sample rate asynchronously after START;
+            // wait briefly so the decoders are configured at the right rate.
+            for (int i = 0; i < 40; ++i)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                if (app.server.sampleRate() > 1.0)
+                    break;
+            }
+        }
     }
 
     if (ok)
@@ -287,8 +316,8 @@ static void drawControls(App& app)
     bool running = app.active->running();
 
     ImGui::BeginDisabled(running);
-    const char* modes[] = {"RTL-SDR", "WAV file"};
-    ImGui::Combo("Source", &app.sourceMode, modes, 2);
+    const char* modes[] = {"RTL-SDR", "WAV file", "SDR++ Server"};
+    ImGui::Combo("Source", &app.sourceMode, modes, 3);
     ImGui::EndDisabled();
 
     ImGui::Separator();
@@ -386,7 +415,7 @@ static void drawControls(App& app)
                 app.sdr.setDcBlock(app.dcBlock);
         }
     }
-    else
+    else if (app.sourceMode == 1)
     {
         // ---- WAV file ----
         ImGui::SetNextItemWidth(-90.0f);
@@ -409,6 +438,26 @@ static void drawControls(App& app)
             ImGui::Text("WAV: %d ch, %d-bit, %.1f kHz",
                         app.wav.channels(), app.wav.bits(), app.wav.sampleRate() / 1e3);
         }
+    }
+    else
+    {
+        // ---- SDR++ Server ----
+        ImGui::BeginDisabled(running);
+        ImGui::SetNextItemWidth(-60.0f);
+        ImGui::InputText("Host", app.serverHost, sizeof(app.serverHost));
+        ImGui::InputInt("Port", &app.serverPort);
+        const char* sampleTypes[] = {"int8 (low BW)", "int16", "float32 (high BW)"};
+        ImGui::Combo("Sample type", &app.serverSampleType, sampleTypes, 3);
+        ImGui::Checkbox("Compression (zstd)", &app.serverCompression);
+        ImGui::EndDisabled();
+
+        if (ImGui::InputDouble("Center (MHz)", &app.centerFreqMHz, 0.1, 1.0, "%.4f"))
+        {
+            app.resetView = true;
+            if (running)
+                app.server.setCenterFreq(app.centerFreqMHz * 1e6);
+        }
+        ImGui::TextDisabled("Gain/device settings are configured on the server.");
     }
 
     ImGui::Separator();
@@ -949,6 +998,7 @@ int main(int, char**)
     app.decoders.stop();
     app.sdr.stop();
     app.wav.stop();
+    app.server.stop();
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
