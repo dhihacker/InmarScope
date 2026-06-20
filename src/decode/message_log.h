@@ -1,6 +1,7 @@
 // Thread-safe log of decoded messages for the Messages panel.
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -104,4 +105,71 @@ private:
     std::mutex mtx_;
     std::vector<CassignEntry> items_;
     uint64_t count_ = 0;
+};
+
+// A channel discovered from the network's own system-table broadcasts.
+struct NetworkChannel
+{
+    double freqMHz = 0.0;
+    std::string kind; // "Psmc (P-ch RX)", "Rsmc0 (R-ch TX)", "CAC", ...
+    uint8_t ges = 0;
+    uint64_t hits = 0;
+};
+
+struct SatInfo
+{
+    bool valid = false;
+    int satId = 0;
+    std::string longitude;
+};
+
+// Network/channel map built from AES system-table SUs (0x05 Psmc/Rsmc, 0x0C
+// satellite ID). Channels are de-duplicated by frequency + kind.
+class ChannelTable
+{
+public:
+    void addChannel(double freqMHz, const std::string& kind, uint8_t ges)
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        for (auto& c : chans_)
+            if (std::abs(c.freqMHz - freqMHz) < 0.0005 && c.kind == kind)
+            {
+                c.hits++;
+                c.ges = ges;
+                return;
+            }
+        chans_.push_back({freqMHz, kind, ges, 1});
+    }
+
+    void setSatellite(int satId, const std::string& longitude)
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        sat_.valid = true;
+        sat_.satId = satId;
+        sat_.longitude = longitude;
+    }
+
+    std::vector<NetworkChannel> snapshot()
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        return chans_;
+    }
+
+    SatInfo satellite()
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        return sat_;
+    }
+
+    void clear()
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        chans_.clear();
+        sat_ = SatInfo{};
+    }
+
+private:
+    std::mutex mtx_;
+    std::vector<NetworkChannel> chans_;
+    SatInfo sat_;
 };

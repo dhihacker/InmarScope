@@ -53,6 +53,7 @@ public:
     MessageLog& log() { return log_; }
     MessageLog& suLog() { return suLog_; }
     CassignLog& cassignLog() { return cassign_; }
+    ChannelTable& channelTable() { return netTable_; }
 
     // Voice: route one 8400 decoder's audio to the speakers.
     void setVoiceMonitor(int channelId);
@@ -103,6 +104,7 @@ private:
     MessageLog log_;
     MessageLog suLog_;
     CassignLog cassign_;
+    ChannelTable netTable_;
     AudioOutput audio_;
     int voiceMonitorId_ = -1;
 };

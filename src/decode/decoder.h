@@ -23,7 +23,7 @@ public:
     // decoder consumes; chanFreqHz is the absolute channel frequency.
     Decoder(double subRate, double subCenterHz, double chanFreqHz, int baud,
             int channelId, MessageLog* log, MessageLog* suLog, AudioOutput* audioSink,
-            CassignLog* cassignLog);
+            CassignLog* cassignLog, ChannelTable* netTable);
     ~Decoder();
 
     // Process a block of sub-band interleaved double IQ (decode thread).
@@ -74,6 +74,7 @@ private:
     MessageLog* log_;
     MessageLog* suLog_;
     CassignLog* cassignLog_;
+    ChannelTable* netTable_;
 
     double subCenterHz_;
     double chanFreqHz_;

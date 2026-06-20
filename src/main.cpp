@@ -831,9 +831,65 @@ static void drawCChannel(App& app)
         }
         ImGui::EndTable();
     }
+    ImGui::End();
+}
+
+static void drawNetwork(App& app)
+{
+    ImGui::Begin("Network");
+
+    SatInfo sat = app.decoders.channelTable().satellite();
+    if (sat.valid)
+        ImGui::Text("Satellite ID: %d   Longitude: %s", sat.satId, sat.longitude.c_str());
+    else
+        ImGui::TextDisabled("Satellite: (waiting for system table)");
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear"))
+        app.decoders.channelTable().clear();
+    ImGui::TextDisabled("Discovered from system-table broadcasts. RX = forward (decodable).");
+    ImGui::Separator();
+
+    static const int kBaudVals[] = {600, 1200, 8400, 10500};
+    auto chans = app.decoders.channelTable().snapshot();
+    if (ImGui::BeginTable("##net", 5,
+                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable))
+    {
+        ImGui::TableSetupColumn("Freq MHz", ImGuiTableColumnFlags_WidthFixed, 80);
+        ImGui::TableSetupColumn("Type");
+        ImGui::TableSetupColumn("GES", ImGuiTableColumnFlags_WidthFixed, 40);
+        ImGui::TableSetupColumn("Hits", ImGuiTableColumnFlags_WidthFixed, 48);
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 60);
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableHeadersRow();
+
+        for (size_t i = 0; i < chans.size(); ++i)
+        {
+            const auto& c = chans[i];
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("%.4f", c.freqMHz);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(c.kind.c_str());
+            ImGui::TableNextColumn();
+            ImGui::Text("%02X", c.ges);
+            ImGui::TableNextColumn();
+            ImGui::Text("%llu", (unsigned long long)c.hits);
+            ImGui::TableNextColumn();
+            char btn[24];
+            std::snprintf(btn, sizeof(btn), "Tune##%zu", i);
+            if (ImGui::SmallButton(btn))
+            {
+                int idx = app.newBaud < 0 ? 0 : (app.newBaud > 3 ? 3 : app.newBaud);
+                app.decoders.addDecoder(c.freqMHz * 1e6, kBaudVals[idx]);
+            }
+        }
+        ImGui::EndTable();
+    }
 
     ImGui::End();
 }
+
 static ImPlotPoint constGetter(int idx, void* data)
 {
     const float* p = static_cast<const float*>(data);
@@ -959,6 +1015,7 @@ static void drawDockHost()
         ImGui::DockBuilderDockWindow("SUs", rbot);
         ImGui::DockBuilderDockWindow("Messages", rbot);
         ImGui::DockBuilderDockWindow("C-Channel", rbot);
+        ImGui::DockBuilderDockWindow("Network", rbot);
         ImGui::DockBuilderDockWindow("Constellation", rcon);
         ImGui::DockBuilderFinish(dockId);
     }
@@ -1033,6 +1090,7 @@ int main(int, char**)
         drawSUs(app);
         drawMessages(app);
         drawCChannel(app);
+        drawNetwork(app);
         drawConstellation(app);
 
         int display_w, display_h;

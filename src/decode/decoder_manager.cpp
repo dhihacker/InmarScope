@@ -91,7 +91,7 @@ int DecoderManager::addDecoder(double freqHz, int baud)
             if (std::fabs(freqHz - sb->centerHz) < 0.36 * sb->subRate)
             {
                 Decoder* dec = sb->decoders.emplace_back(std::make_unique<Decoder>(
-                    sb->subRate, sb->centerHz, freqHz, baud, id, &log_, &suLog_, &audio_, &cassign_)).get();
+                    sb->subRate, sb->centerHz, freqHz, baud, id, &log_, &suLog_, &audio_, &cassign_, &netTable_)).get();
                 w->count.fetch_add(1);
                 if (baud == 8400 && voiceMonitorId_ < 0)
                 {
@@ -112,7 +112,7 @@ int DecoderManager::addDecoder(double freqHz, int baud)
     std::lock_guard<std::mutex> lk(best->dMtx);
     auto sb = std::make_unique<SubBand>(Fs_, centerHz_, freqHz, kSubRateTarget, kSubBW);
     Decoder* dec = sb->decoders.emplace_back(std::make_unique<Decoder>(
-        sb->subRate, sb->centerHz, freqHz, baud, id, &log_, &suLog_, &audio_, &cassign_)).get();
+        sb->subRate, sb->centerHz, freqHz, baud, id, &log_, &suLog_, &audio_, &cassign_, &netTable_)).get();
     if (baud == 8400 && voiceMonitorId_ < 0)
     {
         dec->setMonitored(true);

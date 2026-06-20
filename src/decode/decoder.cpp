@@ -69,11 +69,12 @@ static const char* suTypeName(uint8_t t)
 
 Decoder::Decoder(double subRate, double subCenterHz, double chanFreqHz, int baud,
                  int channelId, MessageLog* log, MessageLog* suLog, AudioOutput* audioSink,
-                 CassignLog* cassignLog)
+                 CassignLog* cassignLog, ChannelTable* netTable)
     : ddc_(subRate, chanFreqHz - subCenterHz, ddcRate(baud), ddcBw(baud)),
       log_(log),
       suLog_(suLog),
       cassignLog_(cassignLog),
+      netTable_(netTable),
       subCenterHz_(subCenterHz),
       chanFreqHz_(chanFreqHz),
       baud_(baud),
@@ -269,6 +270,65 @@ void Decoder::onDecoded(const uint8_t* data, int len)
         m.hex += hexbuf;
     }
     suLog_->add(m);
+
+    // System-table SUs broadcast the network channel plan -> identify channels.
+    if (netTable_ && len >= 10)
+    {
+        if (data[0] == 0x05) // GES Psmc/Rsmc channels
+        {
+            int b3 = data[2];
+            uint8_t ges = data[3];
+            int ch1 = (data[4] << 8) | data[5];
+            int ch2 = (data[6] << 8) | data[7];
+            int ch3 = (data[8] << 8) | data[9];
+            double f1 = ch1 * 0.0025 + 1510.0;
+            double f2 = ch2 * 0.0025 + 1510.0;
+            double f3 = ch3 * 0.0025 + 1510.0;
+            int lsu = b3 & 0x03;
+            if (lsu <= 1)
+            {
+                f2 += 101.5;
+                f3 += 101.5;
+                netTable_->addChannel(f1, "Psmc (P-ch RX)", ges);
+                netTable_->addChannel(f2, "Rsmc0 (R-ch TX)", ges);
+                netTable_->addChannel(f3, "Rsmc1 (R-ch TX)", ges);
+            }
+            else if (lsu == 2)
+            {
+                f1 += 101.5; f2 += 101.5; f3 += 101.5;
+                netTable_->addChannel(f1, "Rsmc2 (R-ch TX)", ges);
+                netTable_->addChannel(f2, "Rsmc3 (R-ch TX)", ges);
+                netTable_->addChannel(f3, "Rsmc4 (R-ch TX)", ges);
+            }
+            else
+            {
+                f1 += 101.5; f2 += 101.5; f3 += 101.5;
+                netTable_->addChannel(f1, "Rsmc5 (R-ch TX)", ges);
+                netTable_->addChannel(f2, "Rsmc6 (R-ch TX)", ges);
+                netTable_->addChannel(f3, "Rsmc7 (R-ch TX)", ges);
+            }
+        }
+        else if (data[0] == 0x0C) // satellite identification + CAC/Psmc
+        {
+            int b3 = data[2], b4 = data[3], b6 = data[5];
+            double lon = b6 * 1.5;
+            int b7 = data[6], b8 = data[7], b9 = data[8], b10 = data[9];
+            int ch1 = ((b7 & 0x7F) << 8) | b8;
+            int ch2 = ((b9 & 0x7F) << 8) | b10;
+            double cac1 = ch1 * 0.0025 + 1510.0;
+            double cac2 = ch2 * 0.0025 + 1510.0;
+            int satid = ((b3 << 4) & 0x30) | ((b4 >> 4) & 0x0F);
+            char lonbuf[24];
+            if (lon > 180.0)
+                std::snprintf(lonbuf, sizeof(lonbuf), "%.1fW", 360.0 - lon);
+            else
+                std::snprintf(lonbuf, sizeof(lonbuf), "%.1fE", lon);
+            netTable_->setSatellite(satid, lonbuf);
+            netTable_->addChannel(cac1, "CAC/Psmc1 (P-ch RX)", 0);
+            if (ch2)
+                netTable_->addChannel(cac2, "CAC/Psmc2 (P-ch RX)", 0);
+        }
+    }
 }
 
 void Decoder::cassignTrampoline(int, uint8_t type, uint32_t aes_id, uint8_t ges_id,
