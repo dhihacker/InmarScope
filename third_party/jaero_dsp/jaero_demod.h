@@ -54,6 +54,22 @@ void jaero_pmsk_set_cassign_callback(jaero_pmsk_demod_t *d, jaero_cassign_cb cb,
  * not just valid ACARS). data/len are the raw decoded frame bytes. */
 typedef void (*jaero_decoded_cb)(const uint8_t *data, int len, int channel_id, void *user);
 void jaero_pmsk_set_decoded_callback(jaero_pmsk_demod_t *d, jaero_decoded_cb cb, void *user);
+
+/* Parsed ACARS message (JAERO-style clean fields). */
+typedef struct jaero_acars_msg {
+    uint32_t aes_id;
+    uint8_t  ges_id;
+    int      downlink;     /* 1 = downlink (from aircraft), 0 = uplink */
+    int      nonacars;     /* 1 = non-ACARS (e.g. media advisory) */
+    char     mode;         /* ACARS mode char */
+    char     bi;           /* block id char */
+    char     reg[16];      /* aircraft registration, null-terminated */
+    char     label[4];     /* 2-char ACARS label, null-terminated */
+    const uint8_t *text;   /* decoded message text body */
+    int      text_len;
+} jaero_acars_msg;
+typedef void (*jaero_acars2_cb)(int channel_id, const jaero_acars_msg *msg, void *user);
+void jaero_pmsk_set_acars2_callback(jaero_pmsk_demod_t *d, jaero_acars2_cb cb, void *user);
 double jaero_pmsk_get_mse(jaero_pmsk_demod_t *d);
 double jaero_pmsk_get_ebno(jaero_pmsk_demod_t *d);
 int    jaero_pmsk_is_locked(jaero_pmsk_demod_t *d);
@@ -99,6 +115,7 @@ void jaero_oqpsk_cont_destroy(jaero_oqpsk_cont_demod_t *d);
 void jaero_oqpsk_cont_set_acars_callback(jaero_oqpsk_cont_demod_t *d, jaero_acars_cb cb, void *user);
 void jaero_oqpsk_cont_set_cassign_callback(jaero_oqpsk_cont_demod_t *d, jaero_cassign_cb cb, void *user);
 void jaero_oqpsk_cont_set_decoded_callback(jaero_oqpsk_cont_demod_t *d, jaero_decoded_cb cb, void *user);
+void jaero_oqpsk_cont_set_acars2_callback(jaero_oqpsk_cont_demod_t *d, jaero_acars2_cb cb, void *user);
 double jaero_oqpsk_cont_get_mse(jaero_oqpsk_cont_demod_t *d);
 double jaero_oqpsk_cont_get_ebno(jaero_oqpsk_cont_demod_t *d);
 int    jaero_oqpsk_cont_is_locked(jaero_oqpsk_cont_demod_t *d);

@@ -77,7 +77,7 @@ Decoder::Decoder(double subRate, double subCenterHz, double chanFreqHz, int baud
                                          nullptr, nullptr);
         if (oqpsk_)
         {
-            jaero_oqpsk_cont_set_acars_callback(oqpsk_, &Decoder::acarsTrampoline, this);
+            jaero_oqpsk_cont_set_acars2_callback(oqpsk_, &Decoder::acars2Trampoline, this);
             jaero_oqpsk_cont_set_decoded_callback(oqpsk_, &Decoder::decodedTrampoline, this);
             jaero_oqpsk_cont_set_cassign_callback(oqpsk_, &Decoder::cassignTrampoline, this);
         }
@@ -88,7 +88,7 @@ Decoder::Decoder(double subRate, double subCenterHz, double chanFreqHz, int baud
                                   nullptr, nullptr);
         if (pmsk_)
         {
-            jaero_pmsk_set_acars_callback(pmsk_, &Decoder::acarsTrampoline, this);
+            jaero_pmsk_set_acars2_callback(pmsk_, &Decoder::acars2Trampoline, this);
             jaero_pmsk_set_decoded_callback(pmsk_, &Decoder::decodedTrampoline, this);
             jaero_pmsk_set_cassign_callback(pmsk_, &Decoder::cassignTrampoline, this);
         }
@@ -179,6 +179,52 @@ void Decoder::onAcars(const uint8_t* data, int len, uint32_t aes_id,
         std::snprintf(hexbuf, sizeof(hexbuf), "%02X ", c);
         m.hex += hexbuf;
     }
+
+    if (log_)
+        log_->add(m);
+    ++msgCount_;
+}
+
+void Decoder::acars2Trampoline(int, const jaero_acars_msg* msg, void* user)
+{
+    static_cast<Decoder*>(user)->onAcars2(msg);
+}
+
+void Decoder::onAcars2(const jaero_acars_msg* msg)
+{
+    DecodedMessage m;
+    m.channelId = channelId_;
+    m.freqMHz = chanFreqHz_ / 1e6;
+    m.aesId = msg->aes_id;
+    m.gesId = msg->ges_id;
+    m.downlink = msg->downlink;
+
+    // Registration: strip leading/trailing padding ('.', space).
+    std::string reg = msg->reg;
+    size_t a = reg.find_first_not_of(". ");
+    size_t b = reg.find_last_not_of(". ");
+    if (a != std::string::npos)
+        m.reg = reg.substr(a, b - a + 1);
+    m.label = msg->label;
+
+    // Clean text: keep printable, fold CR/LF to spaces, trim, hex alongside.
+    std::string t;
+    char hexbuf[8];
+    for (int i = 0; i < msg->text_len; ++i)
+    {
+        unsigned char c = msg->text[i];
+        if (c == '\r' || c == '\n' || c == '\t')
+            t.push_back(' ');
+        else if (c >= 0x20 && c < 0x7f)
+            t.push_back((char)c);
+        std::snprintf(hexbuf, sizeof(hexbuf), "%02X ", c);
+        m.hex += hexbuf;
+    }
+    size_t e = t.find_last_not_of(' ');
+    size_t s = t.find_first_not_of(' ');
+    if (s != std::string::npos)
+        t = t.substr(s, e - s + 1);
+    m.text = t;
 
     if (log_)
         log_->add(m);

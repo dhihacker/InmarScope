@@ -14,8 +14,10 @@ struct DecodedMessage
     uint32_t aesId = 0;
     uint8_t gesId = 0;
     int downlink = 0;
-    std::string text; // printable rendering of the payload
-    std::string hex;  // hex rendering
+    std::string reg;   // aircraft registration (ACARS)
+    std::string label; // ACARS label
+    std::string text;  // printable rendering of the payload
+    std::string hex;   // hex rendering
 };
 
 class MessageLog

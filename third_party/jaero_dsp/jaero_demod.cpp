@@ -338,6 +338,8 @@ struct jaero_pmsk_demod {
     void *user;
     jaero_acars_cb acars_cb;
     void *acars_user;
+    jaero_acars2_cb acars2_cb;
+    void *acars2_user;
     jaero_cassign_cb cassign_cb;
     void *cassign_user;
     jaero_decoded_cb decoded_cb;
@@ -346,6 +348,27 @@ struct jaero_pmsk_demod {
     bool afc_on;          /* shadow of MskDemodulator::afc for UI readout */
     double lockingbw;     /* shadow of Settings.lockingbw so UI can pick a zoom window */
 };
+
+// Fill a jaero_acars_msg from a parsed ACARSItem.
+static void fill_acars_msg(jaero_acars_msg &m, ACARSItem &a)
+{
+    m.aes_id = a.isuitem.AESID;
+    m.ges_id = a.isuitem.GESID;
+    m.downlink = a.downlink ? 1 : 0;
+    m.nonacars = a.nonacars ? 1 : 0;
+    m.mode = a.MODE;
+    m.bi = (char)a.BI;
+    size_t rn = a.PLANEREG.size();
+    if (rn > 15) rn = 15;
+    for (size_t i = 0; i < rn; ++i) m.reg[i] = (char)a.PLANEREG[i];
+    m.reg[rn] = 0;
+    size_t ln = a.LABEL.size();
+    if (ln > 3) ln = 3;
+    for (size_t i = 0; i < ln; ++i) m.label[i] = (char)a.LABEL[i];
+    m.label[ln] = 0;
+    m.text = a.message.data();
+    m.text_len = (int)a.message.size();
+}
 
 static void pmsk_decoded_adapter(const uint8_t *data, int len, void *ctx)
 {
@@ -372,7 +395,9 @@ static void pmsk_bits_adapter(const short *bits, int num_bits, void *ctx)
 static void pmsk_acars_adapter(ACARSItem &acarsitem, void *ctx)
 {
     jaero_pmsk_demod_t *d = (jaero_pmsk_demod_t *)ctx;
-    if (d->acars_cb && acarsitem.valid) {
+    if (!acarsitem.valid)
+        return;
+    if (d->acars_cb) {
         const uint8_t *data = acarsitem.isuitem.userdata.data();
         int len = (int)acarsitem.isuitem.userdata.size();
         d->acars_cb(data, len, d->channel_id,
@@ -380,6 +405,11 @@ static void pmsk_acars_adapter(ACARSItem &acarsitem, void *ctx)
                     acarsitem.isuitem.QNO, acarsitem.isuitem.REFNO,
                     acarsitem.downlink ? 1 : 0,
                     d->acars_user);
+    }
+    if (d->acars2_cb) {
+        jaero_acars_msg m;
+        fill_acars_msg(m, acarsitem);
+        d->acars2_cb(d->channel_id, &m, d->acars2_user);
     }
 }
 
@@ -401,6 +431,8 @@ jaero_pmsk_demod_t *jaero_pmsk_create(double sample_rate, double symbol_rate,
     d->user = user;
     d->acars_cb = NULL;
     d->acars_user = NULL;
+    d->acars2_cb = NULL;
+    d->acars2_user = NULL;
     d->cassign_cb = NULL;
     d->cassign_user = NULL;
     d->decoded_cb = NULL;
@@ -474,6 +506,16 @@ void jaero_pmsk_set_decoded_callback(jaero_pmsk_demod_t *d,
     d->decoded_user = user;
     if (d->aerol)
         d->aerol->setDecodedCallback(pmsk_decoded_adapter, d);
+}
+
+void jaero_pmsk_set_acars2_callback(jaero_pmsk_demod_t *d,
+                                      jaero_acars2_cb cb, void *user)
+{
+    if (!d) return;
+    d->acars2_cb = cb;
+    d->acars2_user = user;
+    if (d->aerol)
+        d->aerol->setACARSCallback(pmsk_acars_adapter, d);
 }
 
 static void pmsk_cassign_adapter(CChannelAssignmentItem &item, void *ctx)
@@ -572,6 +614,8 @@ struct jaero_oqpsk_cont_demod {
     void *user;
     jaero_acars_cb acars_cb;
     void *acars_user;
+    jaero_acars2_cb acars2_cb;
+    void *acars2_user;
     jaero_cassign_cb cassign_cb;
     void *cassign_user;
     jaero_decoded_cb decoded_cb;
@@ -591,7 +635,9 @@ static void oqpsk_cont_decoded_adapter(const uint8_t *data, int len, void *ctx)
 static void oqpsk_cont_aerol_acars_adapter(ACARSItem &acarsitem, void *ctx)
 {
     jaero_oqpsk_cont_demod_t *d = (jaero_oqpsk_cont_demod_t *)ctx;
-    if (d->acars_cb && acarsitem.valid) {
+    if (!acarsitem.valid)
+        return;
+    if (d->acars_cb) {
         const uint8_t *data = acarsitem.isuitem.userdata.data();
         int len = (int)acarsitem.isuitem.userdata.size();
         d->acars_cb(data, len, d->channel_id,
@@ -599,6 +645,11 @@ static void oqpsk_cont_aerol_acars_adapter(ACARSItem &acarsitem, void *ctx)
                     acarsitem.isuitem.QNO, acarsitem.isuitem.REFNO,
                     acarsitem.downlink ? 1 : 0,
                     d->acars_user);
+    }
+    if (d->acars2_cb) {
+        jaero_acars_msg m;
+        fill_acars_msg(m, acarsitem);
+        d->acars2_cb(d->channel_id, &m, d->acars2_user);
     }
 }
 
@@ -641,6 +692,8 @@ jaero_oqpsk_cont_demod_t *jaero_oqpsk_cont_create(double sample_rate, double sym
     d->user        = user;
     d->acars_cb    = NULL;
     d->acars_user  = NULL;
+    d->acars2_cb   = NULL;
+    d->acars2_user = NULL;
     d->cassign_cb  = NULL;
     d->cassign_user = NULL;
     d->decoded_cb  = NULL;
@@ -719,6 +772,16 @@ void jaero_oqpsk_cont_set_decoded_callback(jaero_oqpsk_cont_demod_t *d,
     d->decoded_user = user;
     if (d->aerol)
         d->aerol->setDecodedCallback(oqpsk_cont_decoded_adapter, d);
+}
+
+void jaero_oqpsk_cont_set_acars2_callback(jaero_oqpsk_cont_demod_t *d,
+                                            jaero_acars2_cb cb, void *user)
+{
+    if (!d) return;
+    d->acars2_cb = cb;
+    d->acars2_user = user;
+    if (d->aerol)
+        d->aerol->setACARSCallback(oqpsk_cont_aerol_acars_adapter, d);
 }
 
 static void oqpsk_cont_cassign_adapter(CChannelAssignmentItem &item, void *ctx)

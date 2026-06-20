@@ -12,6 +12,7 @@
 
 struct jaero_pmsk_demod;       // from jaero_demod.h
 struct jaero_oqpsk_cont_demod; // from jaero_demod.h
+struct jaero_acars_msg;        // from jaero_demod.h
 
 class Decoder
 {
@@ -45,6 +46,9 @@ private:
                                 uint8_t refno, int downlink, void* user);
     void onAcars(const uint8_t* data, int len, uint32_t aes_id, uint8_t ges_id,
                  int downlink);
+    static void acars2Trampoline(int channel_id, const jaero_acars_msg* msg,
+                                 void* user);
+    void onAcars2(const jaero_acars_msg* msg);
     static void decodedTrampoline(const uint8_t* data, int len, int channel_id,
                                   void* user);
     void onDecoded(const uint8_t* data, int len);

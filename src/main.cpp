@@ -681,13 +681,15 @@ static void drawMessages(App& app)
     ImGui::Separator();
 
     auto msgs = app.decoders.log().snapshot();
-    if (ImGui::BeginTable("##msgs", 4,
+    if (ImGui::BeginTable("##msgs", 6,
                           ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                           ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable))
     {
-        ImGui::TableSetupColumn("Freq", ImGuiTableColumnFlags_WidthFixed, 70);
-        ImGui::TableSetupColumn("Dir", ImGuiTableColumnFlags_WidthFixed, 36);
-        ImGui::TableSetupColumn("AES", ImGuiTableColumnFlags_WidthFixed, 70);
+        ImGui::TableSetupColumn("Freq", ImGuiTableColumnFlags_WidthFixed, 64);
+        ImGui::TableSetupColumn("Dir", ImGuiTableColumnFlags_WidthFixed, 32);
+        ImGui::TableSetupColumn("Reg", ImGuiTableColumnFlags_WidthFixed, 70);
+        ImGui::TableSetupColumn("AES", ImGuiTableColumnFlags_WidthFixed, 60);
+        ImGui::TableSetupColumn("Lbl", ImGuiTableColumnFlags_WidthFixed, 36);
         ImGui::TableSetupColumn("Text");
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableHeadersRow();
@@ -700,7 +702,11 @@ static void drawMessages(App& app)
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(it->downlink ? "DL" : "UL");
             ImGui::TableNextColumn();
+            ImGui::TextUnformatted(it->reg.c_str());
+            ImGui::TableNextColumn();
             ImGui::Text("%06X", it->aesId);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(it->label.c_str());
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(it->text.c_str());
         }
