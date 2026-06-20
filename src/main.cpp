@@ -424,8 +424,8 @@ static void drawControls(App& app)
     ImGui::TextDisabled("drag=pan  scroll=zoom  dbl-click=fit");
 
     ImGui::Separator();
-    const char* bauds[] = {"600", "1200"};
-    ImGui::Combo("Decode baud", &app.newBaud, bauds, 2);
+    const char* bauds[] = {"600", "1200", "10500"};
+    ImGui::Combo("Decode baud", &app.newBaud, bauds, 3);
     ImGui::TextDisabled("Ctrl+click the spectrum to add a decoder there");
 
     if (running)
@@ -526,7 +526,8 @@ static void drawSpectrum(App& app)
             ImGui::IsMouseClicked(ImGuiMouseButton_Left))
         {
             ImPlotPoint mp = ImPlot::GetPlotMousePos();
-            int baud = (app.newBaud == 0) ? 600 : 1200;
+            static const int kBaudVals[] = {600, 1200, 10500};
+            int baud = kBaudVals[app.newBaud < 0 ? 0 : (app.newBaud > 2 ? 2 : app.newBaud)];
             app.decoders.addDecoder(mp.x * 1e6, baud);
         }
 
