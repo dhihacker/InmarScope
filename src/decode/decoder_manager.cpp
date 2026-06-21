@@ -21,8 +21,8 @@ void DecoderManager::start()
 
     unsigned hw = std::thread::hardware_concurrency();
     int nWorkers = (hw > 2) ? (int)hw - 1 : 1;
-    if (nWorkers > 8)
-        nWorkers = 8;
+    if (nWorkers > maxWorkers_)
+        nWorkers = maxWorkers_;
     if (nWorkers < 1)
         nWorkers = 1;
 
@@ -33,7 +33,8 @@ void DecoderManager::start()
     for (auto& w : workers_)
         w->thread = std::thread([this, wp = w.get()]() { workerLoop(wp); });
 
-    audio_.start(8000); // 8 kHz mono voice output
+    if (audioEnabled_)
+        audio_.start(8000); // 8 kHz mono voice output
 }
 
 void DecoderManager::stop()
@@ -45,7 +46,8 @@ void DecoderManager::stop()
         if (w->thread.joinable())
             w->thread.join();
     workers_.clear();
-    audio_.stop();
+    if (audioEnabled_)
+        audio_.stop();
     voiceMonitorId_ = -1;
 }
 

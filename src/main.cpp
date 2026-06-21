@@ -64,6 +64,26 @@ static void glfw_error_callback(int error, const char* description)
     std::fprintf(stderr, "GLFW error %d: %s\n", error, description);
 }
 
+// Per-stream spectrum/waterfall state. One per receive chain (primary + voice).
+struct SpectrumView
+{
+    IqRing ring{1u << 21};
+    JFFT fft;
+    Waterfall waterfall;
+    std::vector<std::complex<double>> iq;
+    std::vector<double> window;
+    std::vector<float> inst;    // instantaneous dB (shifted)
+    std::vector<float> avg;     // averaged dB for the line plot
+    std::vector<float> sortbuf; // scratch for percentile auto-scale
+    std::vector<float> freqMHz;
+    int curN = 0;
+    float rmsDbfs = -120.0f;
+    float frameDbMin = 0.0f, frameDbMax = -120.0f;
+    double viewXminMHz = 0.0, viewXmaxMHz = 0.0;
+    bool resetView = true;
+    float specLeftInset = 0.0f, specRightInset = 0.0f;
+};
+
 struct App
 {
     RtlSdrSource sdr;
@@ -87,10 +107,22 @@ struct App
     bool   hackAmp = false; // ~11 dB RF amp
     bool   hackBias = false; // antenna/port power (bias tee)
 
-    IqRing ring{1u << 21};
-    JFFT fft;
-    Waterfall waterfall;
-    DecoderManager decoders;
+    SpectrumView viewA;       // primary (P-channel) display
+    SpectrumView viewB;       // voice SDR display (dual-SDR mode)
+    DecoderManager decoders;  // primary decoders (SDR A)
+    DecoderManager decodersB; // voice decoders (SDR B)
+    RtlSdrSource sdrB;        // second RTL for dedicated voice follow
+
+    // Dual-SDR voice follow (second RTL).
+    bool   voiceSdrEnabled = false; // user enabled the 2nd RTL voice chain
+    bool   dualMode = false;        // both A and B running
+    int    deviceIndexB = 1;        // 2nd RTL device index
+    double voiceCenterMHz = 1545.0; // SDR B park center (last voice heard)
+    int    sampleRateIdxB = 0;      // index into kRates (low rate ok for voice)
+    bool   autoGainB = false;
+    float  gainDbB = 40.0f;
+    bool   biasTeeB = false;
+    float  ppmB = 0.0f;
     int newBaud = 1; // 0 = 600, 1 = 1200 (baud for click-added decoders)
     int selectedDecoder = -1;     // channelId shown in the constellation panel
     std::vector<float> constBuf;  // interleaved I,Q scratch for the plot
@@ -136,26 +168,15 @@ struct App
     bool   biasTee = false;
     float  ppm = 0.0f;
 
-    // FFT / display settings.
+    // FFT / display settings (shared by both spectrum views).
     int   fftSizeIdx = 2; // index into kFftSizes
     float avgAlpha = 0.6f;
     float dbMin = -80.0f;
     float dbMax = 0.0f;
     bool  dcBlock = true;      // gentle DC blocker in the source path
-
-    std::string status = "Idle";
-
-    // Live diagnostics.
-    float rmsDbfs = -120.0f;   // input level (time-domain RMS)
-    float frameDbMin = 0.0f;   // current FFT min/max (for auto-scale + diag)
-    float frameDbMax = -120.0f;
     bool  autoScale = true;
 
-    // Spectrum/waterfall view (frequency pan/zoom, in MHz). The waterfall
-    // mirrors the spectrum's current X range.
-    double viewXminMHz = 0.0;
-    double viewXmaxMHz = 0.0;
-    bool   resetView = true; // fit X to the full band on next draw
+    std::string status = "Idle";
 
     // Band browsing: panning/scrolling the spectrum past the captured window
     // retunes a live SDR so you can sweep the whole band (not for WAV files).
@@ -166,20 +187,6 @@ struct App
     // rate changes (e.g. SDR++ server rate switch), the manager + FFT are
     // reconfigured to match.
     double lastConfiguredFs = 0.0;
-
-    // Horizontal insets of the spectrum's plot data area (axis gutters), used
-    // to align the waterfall to the spectrum frequency-for-frequency.
-    float specLeftInset = 0.0f;
-    float specRightInset = 0.0f;
-
-    // Working buffers.
-    std::vector<std::complex<double>> iq;
-    std::vector<double> window;
-    std::vector<float>  inst;   // instantaneous dB (shifted)
-    std::vector<float>  avg;    // averaged dB for the line plot
-    std::vector<float>  sortbuf; // scratch for percentile auto-scale
-    std::vector<float>  freqMHz;
-    int curN = 0;
 };
 
 static const double kRates[] = {
@@ -194,31 +201,28 @@ static const int kFftSizes[] = {1024, 2048, 4096, 8192, 16384, 32768, 65536};
 static const char* kFftLabels[] = {"1024", "2048", "4096", "8192", "16384", "32768", "65536"};
 static const int kNumFftSizes = (int)(sizeof(kFftSizes) / sizeof(kFftSizes[0]));
 
-static void buildWindow(App& app, int N)
+static void buildWindow(SpectrumView& v, int N, float initDb)
 {
     // Blackman window: low sidelobes -> clean noise floor, signals stand out.
-    app.window.resize(N);
+    v.window.resize(N);
     for (int i = 0; i < N; ++i)
     {
         double x = 2.0 * M_PI * i / (N - 1);
-        app.window[i] = 0.42 - 0.5 * std::cos(x) + 0.08 * std::cos(2.0 * x);
+        v.window[i] = 0.42 - 0.5 * std::cos(x) + 0.08 * std::cos(2.0 * x);
     }
     int nf = N; // init() builds the twiddle tables; must run before fft().
-    app.fft.init(nf);
-    app.iq.resize(N);
-    app.inst.assign(N, app.dbMin);
-    app.avg.assign(N, app.dbMin);
-    app.freqMHz.resize(N);
-    app.curN = N;
+    v.fft.init(nf);
+    v.iq.resize(N);
+    v.inst.assign(N, initDb);
+    v.avg.assign(N, initDb);
+    v.freqMHz.resize(N);
+    v.curN = N;
 }
 
-static void updateFreqAxis(App& app, int N)
+static void updateFreqAxis(SpectrumView& v, double fc, double fs, int N)
 {
-    bool run = app.active->running();
-    double fs = run ? app.active->sampleRate() : kRates[app.sampleRateIdx];
-    double fc = run ? app.active->centerFreq() : app.centerFreqMHz * 1e6;
     for (int i = 0; i < N; ++i)
-        app.freqMHz[i] = (float)((fc + (i - N / 2) * fs / N) / 1e6);
+        v.freqMHz[i] = (float)((fc + (i - N / 2) * fs / N) / 1e6);
 }
 
 // After DC removal the exact center (DC) bin is a deep null. Cover the few
@@ -234,54 +238,49 @@ static void patchDcBins(std::vector<float>& a, int N, int w)
         a[c - w + k] = a[src + k];
 }
 
-static void processFft(App& app)
+static void processFft(SpectrumView& v, App& app, double fc, double fs)
 {
     int N = kFftSizes[app.fftSizeIdx];
-    if (N != app.curN)
-        buildWindow(app, N);
+    if (N != v.curN)
+        buildWindow(v, N, app.dbMin);
 
-    if (!app.ring.latest(app.iq.data(), (size_t)N))
+    if (!v.ring.latest(v.iq.data(), (size_t)N))
         return;
 
-    // Time-domain input level (dBFS) -- shows whether real RF is arriving.
     double pwr = 0.0;
     for (int i = 0; i < N; ++i)
-        pwr += std::norm(app.iq[i]);
+        pwr += std::norm(v.iq[i]);
     double rms = std::sqrt(pwr / (double)N);
-    app.rmsDbfs = (float)(20.0 * std::log10(rms + 1e-12));
+    v.rmsDbfs = (float)(20.0 * std::log10(rms + 1e-12));
 
     for (int i = 0; i < N; ++i)
-        app.iq[i] *= app.window[i];
+        v.iq[i] *= v.window[i];
 
-    app.fft.fft(app.iq.data(), N, JFFT::FORWARD);
+    v.fft.fft(v.iq.data(), N, JFFT::FORWARD);
 
     const double invN = 1.0 / (double)N;
     const float alpha = app.avgAlpha;
     for (int i = 0; i < N; ++i)
     {
         int src = (i + N / 2) % N; // fftshift: center DC
-        double p = std::norm(app.iq[src]) * invN; // power spectrum
+        double p = std::norm(v.iq[src]) * invN; // power spectrum
         float db = (float)(10.0 * std::log10(p + 1e-20));
-        app.inst[i] = db;
-        app.avg[i] = alpha * app.avg[i] + (1.0f - alpha) * db;
+        v.inst[i] = db;
+        v.avg[i] = alpha * v.avg[i] + (1.0f - alpha) * db;
     }
 
-    // Hide the unavoidable center artifact (a deep null when DC-blocking, a
-    // spike when not) so it doesn't dominate the display or the auto-scale.
-    patchDcBins(app.inst, N, 4);
-    patchDcBins(app.avg, N, 4);
+    patchDcBins(v.inst, N, 4);
+    patchDcBins(v.avg, N, 4);
 
-    // Robust range via percentiles so the colour scale isn't dragged by the
-    // DC null (low extreme) or a single freak bin (high extreme).
-    app.sortbuf.assign(app.inst.begin(), app.inst.end());
+    v.sortbuf.assign(v.inst.begin(), v.inst.end());
     int iFloor = (int)(0.30 * N);
     int iPeak = (int)(0.995 * N);
-    std::nth_element(app.sortbuf.begin(), app.sortbuf.begin() + iFloor, app.sortbuf.end());
-    float floorDb = app.sortbuf[iFloor];
-    std::nth_element(app.sortbuf.begin(), app.sortbuf.begin() + iPeak, app.sortbuf.end());
-    float peakDb = app.sortbuf[iPeak];
-    app.frameDbMin = floorDb;
-    app.frameDbMax = peakDb;
+    std::nth_element(v.sortbuf.begin(), v.sortbuf.begin() + iFloor, v.sortbuf.end());
+    float floorDb = v.sortbuf[iFloor];
+    std::nth_element(v.sortbuf.begin(), v.sortbuf.begin() + iPeak, v.sortbuf.end());
+    float peakDb = v.sortbuf[iPeak];
+    v.frameDbMin = floorDb;
+    v.frameDbMax = peakDb;
     if (app.autoScale)
     {
         float tgtMin = floorDb - 6.0f;
@@ -290,8 +289,8 @@ static void processFft(App& app)
         app.dbMax = 0.85f * app.dbMax + 0.15f * tgtMax;
     }
 
-    updateFreqAxis(app, N);
-    app.waterfall.addRow(app.inst.data(), N, app.dbMin, app.dbMax);
+    updateFreqAxis(v, fc, fs, N);
+    v.waterfall.addRow(v.inst.data(), N, app.dbMin, app.dbMax);
 }
 
 // C-channel assignment types that carry a voice call (0x31 distress .. 0x34
@@ -307,7 +306,7 @@ static void retuneActive(App& app, double centerMHz)
 {
     double hz = centerMHz * 1e6;
     app.centerFreqMHz = centerMHz;
-    app.resetView = true;
+    app.viewA.resetView = true;
     if (app.sourceMode == 0)
         app.sdr.setCenterFreq(hz);
     else if (app.sourceMode == 2)
@@ -319,8 +318,8 @@ static void retuneActive(App& app, double centerMHz)
     // Rebuild the frequency axis now (processFft already ran this frame with the
     // old center) so drawSpectrum fits the view to the NEW band and the decoder
     // marker stays on screen after a big follow jump.
-    if (app.curN > 0)
-        updateFreqAxis(app, app.curN);
+    if (app.viewA.curN > 0)
+        updateFreqAxis(app.viewA, hz, app.active->sampleRate(), app.viewA.curN);
 }
 
 // Retune a live source to a new center while keeping the current decoders
@@ -365,15 +364,70 @@ static void updateRateChange(App& app)
     for (auto& k : keep)
         app.decoders.addDecoder(k.first * 1e6, k.second);
     app.lastConfiguredFs = fs;
-    app.resetView = true;
-    if (app.curN > 0)
-        updateFreqAxis(app, app.curN);
+    app.viewA.resetView = true;
+    if (app.viewA.curN > 0)
+        updateFreqAxis(app.viewA, center, fs, app.viewA.curN);
 }
 
 // Drives the voice-follow state machine once per frame while a source runs.
 static void updateVoiceFollow(App& app)
 {
     using clock = std::chrono::steady_clock;
+
+    // Dual-SDR path: SDR B does voice, SDR A keeps decoding the P-channel.
+    if (app.dualMode)
+    {
+        const uint64_t total = app.decoders.cassignLog().count();
+        if (!app.following)
+        {
+            if (!app.voiceFollow) { app.followSeenCount = total; return; }
+            if (total <= app.followSeenCount) return;
+            auto items = app.decoders.cassignLog().snapshot();
+            const CassignEntry* pick = nullptr;
+            for (auto it = items.rbegin(); it != items.rend(); ++it)
+                if (isVoiceAssign(it->type) && it->rxMHz > 1.0) { pick = &*it; break; }
+            app.followSeenCount = total;
+            if (!pick) return;
+            double rx = pick->rxMHz;
+            app.sdrB.setCenterFreq(rx * 1e6);
+            app.decodersB.removeAll();
+            app.decodersB.configure(app.sdrB.sampleRate(), rx * 1e6);
+            app.viewB.resetView = true;
+            if (app.viewB.curN > 0)
+                updateFreqAxis(app.viewB, rx * 1e6, app.sdrB.sampleRate(), app.viewB.curN);
+            app.followChannelId = app.decodersB.addDecoder(rx * 1e6, 8400);
+            if (app.followChannelId < 0) return;
+            app.decodersB.setVoiceMonitor(app.followChannelId);
+            app.voiceCenterMHz = rx; // park B here when the call ends
+            app.following = true;
+            app.followRetuned = true;
+            app.followEverLocked = false;
+            app.followActivity = clock::now();
+            char buf[64];
+            std::snprintf(buf, sizeof(buf), "Voice SDR following %.4f MHz", rx);
+            app.status = buf;
+            return;
+        }
+        constexpr double kAcquireSec = 12.0;
+        bool locked = false;
+        for (auto& s : app.decodersB.status())
+            if (s.channelId == app.followChannelId) { locked = s.locked; break; }
+        const auto now = clock::now();
+        if (locked) { app.followActivity = now; app.followEverLocked = true; }
+        double grace = app.followEverLocked ? (double)app.followHoldSec
+                                            : std::max((double)app.followHoldSec, kAcquireSec);
+        double idle = std::chrono::duration<double>(now - app.followActivity).count();
+        if (idle > grace || !app.voiceFollow)
+        {
+            app.decodersB.removeDecoder(app.followChannelId);
+            app.followChannelId = -1;
+            app.following = false;
+            app.status = "Running (dual SDR)";
+            // SDR B stays parked + streaming at voiceCenterMHz for its waterfall.
+        }
+        return;
+    }
+
     const bool canRetune = (app.sourceMode != 1); // WAV center is just a label
     const uint64_t total = app.decoders.cassignLog().count();
 
@@ -509,11 +563,11 @@ static void updateFeed(App& app)
 
 static void startActive(App& app)
 {
-    app.ring.clear();
-    app.waterfall.clear();
-    app.resetView = true;
+    app.viewA.ring.clear();
+    app.viewA.waterfall.clear();
+    app.viewA.resetView = true;
 
-    IqRing* ring = &app.ring;
+    IqRing* ring = &app.viewA.ring;
     DecoderManager* mgr = &app.decoders;
     auto cb = [ring, mgr](const float* iq, int n) {
         ring->push(iq, (size_t)n);
@@ -577,8 +631,45 @@ static void startActive(App& app)
 
     if (ok)
     {
+        // Optional dedicated voice SDR (2nd RTL). Start it first so we know
+        // whether to run in dual mode before configuring the primary's audio.
+        bool startedB = false;
+        if (app.voiceSdrEnabled && app.deviceIndexB != app.deviceIndex)
+        {
+            app.viewB.ring.clear();
+            app.viewB.waterfall.clear();
+            app.viewB.resetView = true;
+            IqRing* ringB = &app.viewB.ring;
+            DecoderManager* mgrB = &app.decodersB;
+            auto cbB = [ringB, mgrB](const float* iq, int n) {
+                ringB->push(iq, (size_t)n);
+                mgrB->feed(iq, n);
+            };
+            app.sdrB.setSampleRate(kRates[app.sampleRateIdxB]);
+            app.sdrB.setCenterFreq(app.voiceCenterMHz * 1e6);
+            app.sdrB.setGain(app.autoGainB ? -1.0 : (double)app.gainDbB);
+            app.sdrB.setBiasTee(app.biasTeeB);
+            app.sdrB.setPpm((double)app.ppmB);
+            app.sdrB.setDcBlock(app.dcBlock);
+            std::string errB;
+            startedB = app.sdrB.start(app.deviceIndexB, cbB, errB);
+            if (startedB)
+            {
+                app.decodersB.removeAll();
+                app.decodersB.configure(app.sdrB.sampleRate(), app.sdrB.centerFreq());
+                app.decodersB.setAudioEnabled(true);   // voice audio comes from B
+                app.decodersB.setMaxWorkers(2);
+                app.decodersB.setRecording(app.recordVoice, app.recordDir);
+                app.decodersB.start();
+            }
+            else
+                app.status = "Voice SDR error: " + errB;
+        }
+        app.dualMode = startedB;
+
         app.decoders.removeAll();
         app.decoders.configure(app.active->sampleRate(), app.active->centerFreq());
+        app.decoders.setAudioEnabled(!app.dualMode); // A is silent in dual mode
         app.decoders.start();
         app.lastConfiguredFs = app.active->sampleRate();
         // Don't auto-follow assignments left over from a previous session.
@@ -588,7 +679,10 @@ static void startActive(App& app)
         app.followHome.clear();
     }
 
-    app.status = ok ? "Running" : ("Error: " + err);
+    if (ok)
+        app.status = app.dualMode ? "Running (dual SDR)" : "Running";
+    else
+        app.status = "Error: " + err;
 }
 
 static void drawControls(App& app)
@@ -619,6 +713,13 @@ static void drawControls(App& app)
             app.active->stop();
             app.decoders.stop();
             app.decoders.removeAll();
+            if (app.dualMode)
+            {
+                app.sdrB.stop();
+                app.decodersB.stop();
+                app.decodersB.removeAll();
+            }
+            app.dualMode = false;
             app.following = false;
             app.followChannelId = -1;
             app.followHome.clear();
@@ -661,13 +762,13 @@ static void drawControls(App& app)
 
         if (ImGui::InputDouble("Center (MHz)", &app.centerFreqMHz, 0.1, 1.0, "%.4f"))
         {
-            app.resetView = true;
+            app.viewA.resetView = true;
             if (running)
                 app.sdr.setCenterFreq(app.centerFreqMHz * 1e6);
         }
         if (ImGui::Combo("Sample rate (MHz)", &app.sampleRateIdx, kRateLabels, kNumRates))
         {
-            app.resetView = true;
+            app.viewA.resetView = true;
             if (running)
                 app.sdr.setSampleRate(kRates[app.sampleRateIdx]);
         }
@@ -715,7 +816,7 @@ static void drawControls(App& app)
                 app.wav.setLoop(app.wavLoop);
         }
         if (ImGui::InputDouble("Center label (MHz)", &app.centerFreqMHz, 0.1, 1.0, "%.4f"))
-            app.resetView = true;
+            app.viewA.resetView = true;
 
         if (running)
         {
@@ -738,7 +839,7 @@ static void drawControls(App& app)
 
         if (ImGui::InputDouble("Center (MHz)", &app.centerFreqMHz, 0.1, 1.0, "%.4f"))
         {
-            app.resetView = true;
+            app.viewA.resetView = true;
             if (running)
                 app.server.setCenterFreq(app.centerFreqMHz * 1e6);
         }
@@ -763,7 +864,7 @@ static void drawControls(App& app)
                         if (ImGui::Selectable(labels[i].c_str(), sel) && i < (int)values.size())
                         {
                             app.server.setSampleRate(values[i]);
-                            app.resetView = true;
+                            app.viewA.resetView = true;
                         }
                     }
                     ImGui::EndCombo();
@@ -807,7 +908,7 @@ static void drawControls(App& app)
 
         if (ImGui::InputDouble("Center (MHz)", &app.centerFreqMHz, 0.1, 1.0, "%.4f"))
         {
-            app.resetView = true;
+            app.viewA.resetView = true;
             if (running)
                 app.hack.setCenterFreq(app.centerFreqMHz * 1e6);
         }
@@ -815,7 +916,7 @@ static void drawControls(App& app)
         {
             if (app.hackSampleRateMHz < 2.0) app.hackSampleRateMHz = 2.0;
             if (app.hackSampleRateMHz > 20.0) app.hackSampleRateMHz = 20.0;
-            app.resetView = true;
+            app.viewA.resetView = true;
             if (running)
                 app.hack.setSampleRate(app.hackSampleRateMHz * 1e6);
         }
@@ -853,7 +954,10 @@ static void drawControls(App& app)
         app.dbMax = app.dbMin + 5.0f;
 
     if (ImGui::Button("Reset view (fit band)"))
-        app.resetView = true;
+    {
+        app.viewA.resetView = true;
+        app.viewB.resetView = true;
+    }
     ImGui::SameLine();
     ImGui::TextDisabled("drag=pan  scroll=zoom  dbl-click=fit");
 
@@ -886,6 +990,29 @@ static void drawControls(App& app)
     }
 
     ImGui::Separator();
+    if (ImGui::CollapsingHeader("Voice SDR (2nd RTL)"))
+    {
+        ImGui::BeginDisabled(running);
+        ImGui::Checkbox("Enable dedicated voice SDR", &app.voiceSdrEnabled);
+        ImGui::InputInt("Device index", &app.deviceIndexB);
+        if (app.deviceIndexB == app.deviceIndex)
+            ImGui::TextColored(ImVec4(1, 0.5f, 0.3f, 1), "  must differ from primary (%d)", app.deviceIndex);
+        ImGui::Combo("Voice rate (MHz)", &app.sampleRateIdxB, kRateLabels, kNumRates);
+        ImGui::Checkbox("Voice auto gain", &app.autoGainB);
+        if (!app.autoGainB)
+            ImGui::SliderFloat("Voice gain (dB)", &app.gainDbB, 0.0f, 50.0f, "%.1f");
+        ImGui::Checkbox("Voice Bias-T", &app.biasTeeB);
+        ImGui::InputFloat("Voice PPM", &app.ppmB, 0.1f, 1.0f, "%.2f");
+        ImGui::EndDisabled();
+        ImGui::InputDouble("Voice park (MHz)", &app.voiceCenterMHz, 0.1, 1.0, "%.4f");
+        if (app.dualMode)
+            ImGui::TextColored(ImVec4(0.2f, 1.0f, 0.35f, 1.0f),
+                               "  voice SDR active (dual mode)");
+        else if (app.voiceSdrEnabled)
+            ImGui::TextDisabled("  starts on next Start (uses 2 RTLs)");
+    }
+
+    ImGui::Separator();
     if (ImGui::CollapsingHeader("Output (message feed)"))
     {
         const char* fmts[] = {"JSON (JAERO/Acarshub)", "JAERO text"};
@@ -907,8 +1034,8 @@ static void drawControls(App& app)
     {
         ImGui::Separator();
         ImGui::Text("  Sample rate:   %.4f MHz", app.active->sampleRate() / 1e6);
-        ImGui::Text("  Input level:   %.1f dBFS", app.rmsDbfs);
-        ImGui::Text("  Spectrum:      %.0f .. %.0f dB", app.frameDbMin, app.frameDbMax);
+        ImGui::Text("  Input level:   %.1f dBFS", app.viewA.rmsDbfs);
+        ImGui::Text("  Spectrum:      %.0f .. %.0f dB", app.viewA.frameDbMin, app.viewA.frameDbMax);
 
         if (app.sourceMode == 0)
         {
@@ -928,64 +1055,49 @@ static void drawControls(App& app)
     ImGui::End();
 }
 
-static void drawSpectrum(App& app)
+static void drawSpectrum(App& app, SpectrumView& v, DecoderManager& mgr, const char* title,
+                         bool allowBandBrowse, bool voiceView)
 {
-    ImGui::Begin("Spectrum");
+    ImGui::Begin(title);
     ImVec2 origin = ImGui::GetCursorScreenPos();
     float availW = ImGui::GetContentRegionAvail().x;
-    if (ImPlot::BeginPlot("##spectrum", ImVec2(-1, -1)))
+    std::string plotId = std::string("##plot_") + title;
+    if (ImPlot::BeginPlot(plotId.c_str(), ImVec2(-1, -1)))
     {
         ImPlot::SetupAxes("MHz", "dB", 0, 0);
 
-        // The band is only valid once real frequency data exists (front<back).
-        bool bandValid = (app.curN > 0 && app.freqMHz.front() < app.freqMHz.back());
-
-        // Cap zoom-out so the view can never be wider than the captured band
-        // (i.e. the sample rate). z_min stays tiny to allow zooming in.
+        bool bandValid = (v.curN > 0 && v.freqMHz.front() < v.freqMHz.back());
         if (bandValid)
         {
-            double bandSpan = app.freqMHz.back() - app.freqMHz.front();
+            double bandSpan = v.freqMHz.back() - v.freqMHz.front();
             ImPlot::SetupAxisZoomConstraints(ImAxis_X1, bandSpan * 1e-4, bandSpan);
         }
-
-        // Fit X to the full band only on request (start / tune / reset);
-        // otherwise leave it alone so the user's pan/zoom persists.
-        if (app.resetView && bandValid)
-        {
-            ImPlot::SetupAxisLimits(ImAxis_X1, app.freqMHz.front(),
-                                    app.freqMHz.back(), ImGuiCond_Always);
-        }
-        // Y tracks the dB range when auto-scaling or resetting; otherwise the
-        // user can pan/zoom it freely.
-        if (app.autoScale || app.resetView)
+        if (v.resetView && bandValid)
+            ImPlot::SetupAxisLimits(ImAxis_X1, v.freqMHz.front(), v.freqMHz.back(), ImGuiCond_Always);
+        if (app.autoScale || v.resetView)
             ImPlot::SetupAxisLimits(ImAxis_Y1, app.dbMin, app.dbMax, ImGuiCond_Always);
 
-        if (app.curN > 0)
-            ImPlot::PlotLine("PSD", app.freqMHz.data(), app.avg.data(), app.curN);
+        if (v.curN > 0)
+            ImPlot::PlotLine("PSD", v.freqMHz.data(), v.avg.data(), v.curN);
 
-        // Draggable vertical markers at each decoder's frequency. Grab and
-        // drag to retune that decoder; green = locked, amber = searching.
-        auto decs = app.decoders.status();
+        auto decs = mgr.status();
         for (auto& d : decs)
         {
             double x = d.freqMHz;
             ImVec4 col = d.locked ? ImVec4(0.2f, 1.0f, 0.35f, 1.0f)
                                   : ImVec4(0.9f, 0.7f, 0.2f, 1.0f);
             if (ImPlot::DragLineX(d.channelId, &x, col, 2.0f))
-                app.decoders.setDecoderFreq(d.channelId, x * 1e6);
+                mgr.setDecoderFreq(d.channelId, x * 1e6);
         }
 
         ImPlotRect lim = ImPlot::GetPlotLimits();
-        app.viewXminMHz = lim.X.Min;
-        app.viewXmaxMHz = lim.X.Max;
+        v.viewXminMHz = lim.X.Min;
+        v.viewXmaxMHz = lim.X.Max;
 
-        // Band browsing: if the view has been panned/zoomed so its center drifts
-        // outside the captured window, retune a live SDR to follow. Throttled and
-        // dead-banded so a steady drag sweeps the radio without thrashing.
-        if (app.bandBrowse && app.sourceMode != 1 && app.active->running() &&
-            !app.resetView && !app.following)
+        if (allowBandBrowse && app.bandBrowse && app.sourceMode != 1 &&
+            app.active->running() && !v.resetView && !app.following)
         {
-            double viewCtr = 0.5 * (app.viewXminMHz + app.viewXmaxMHz);
+            double viewCtr = 0.5 * (v.viewXminMHz + v.viewXmaxMHz);
             double sdrCtr = app.active->centerFreq() / 1e6;
             double fsMHz = app.active->sampleRate() / 1e6;
             double deadband = fsMHz * 0.20;
@@ -999,26 +1111,28 @@ static void drawSpectrum(App& app)
             }
         }
 
-        // Inset of the plot's data area within the panel, so the waterfall can
-        // align to the exact same horizontal frequency span.
         ImVec2 pp = ImPlot::GetPlotPos();
         ImVec2 ps = ImPlot::GetPlotSize();
-        app.specLeftInset = pp.x - origin.x;
-        app.specRightInset = (origin.x + availW) - (pp.x + ps.x);
+        v.specLeftInset = pp.x - origin.x;
+        v.specRightInset = (origin.x + availW) - (pp.x + ps.x);
 
-        // Only clear the reset request once a real band has actually been fit.
         if (bandValid)
-            app.resetView = false;
+            v.resetView = false;
 
-        // Ctrl+left-click adds a decoder at the clicked frequency.
         if (ImPlot::IsPlotHovered() && ImGui::GetIO().KeyCtrl &&
             ImGui::IsMouseClicked(ImGuiMouseButton_Left))
         {
             ImPlotPoint mp = ImPlot::GetPlotMousePos();
-            static const int kBaudVals[] = {600, 1200, 8400, 10500, kEgcBaud};
-            int idx = app.newBaud < 0 ? 0 : (app.newBaud > 4 ? 4 : app.newBaud);
-            int baud = kBaudVals[idx];
-            app.decoders.addDecoder(mp.x * 1e6, baud);
+            int baud;
+            if (voiceView)
+                baud = 8400; // voice SDR: manual voice decoder
+            else
+            {
+                static const int kBaudVals[] = {600, 1200, 8400, 10500, kEgcBaud};
+                int idx = app.newBaud < 0 ? 0 : (app.newBaud > 4 ? 4 : app.newBaud);
+                baud = kBaudVals[idx];
+            }
+            mgr.addDecoder(mp.x * 1e6, baud);
         }
 
         ImPlot::EndPlot();
@@ -1026,46 +1140,40 @@ static void drawSpectrum(App& app)
     ImGui::End();
 }
 
-static void drawWaterfall(App& app)
+static void drawWaterfall(App& app, SpectrumView& v, const char* title)
 {
-    ImGui::Begin("Waterfall");
+    (void)app;
+    ImGui::Begin(title);
 
-    // Map the captured band to the spectrum's current view so the waterfall
-    // lines up frequency-for-frequency at any zoom. Both the texture UV range
-    // and the on-screen X sub-rectangle follow the visible overlap, so zooming
-    // out (view wider than the band) shrinks the image to the middle instead of
-    // stretching it across the whole panel.
-    float uMin = 0.0f, uMax = 1.0f; // texture sub-range to sample
-    float xLo = 0.0f, xHi = 1.0f;   // screen X fractions to draw it across
-    if (app.curN > 0)
+    float uMin = 0.0f, uMax = 1.0f;
+    float xLo = 0.0f, xHi = 1.0f;
+    if (v.curN > 0)
     {
-        double bandMin = app.freqMHz.front();
-        double bandMax = app.freqMHz.back();
+        double bandMin = v.freqMHz.front();
+        double bandMax = v.freqMHz.back();
         double bandSpan = bandMax - bandMin;
-        double viewSpan = app.viewXmaxMHz - app.viewXminMHz;
+        double viewSpan = v.viewXmaxMHz - v.viewXminMHz;
         if (bandSpan > 0.0 && viewSpan > 0.0)
         {
-            double visLo = std::max(bandMin, app.viewXminMHz);
-            double visHi = std::min(bandMax, app.viewXmaxMHz);
+            double visLo = std::max(bandMin, v.viewXminMHz);
+            double visHi = std::min(bandMax, v.viewXmaxMHz);
             if (visHi > visLo)
             {
                 uMin = (float)((visLo - bandMin) / bandSpan);
                 uMax = (float)((visHi - bandMin) / bandSpan);
-                xLo = (float)((visLo - app.viewXminMHz) / viewSpan);
-                xHi = (float)((visHi - app.viewXminMHz) / viewSpan);
+                xLo = (float)((visLo - v.viewXminMHz) / viewSpan);
+                xHi = (float)((visHi - v.viewXminMHz) / viewSpan);
             }
             else
             {
-                xLo = xHi = 0.0f; // band entirely off-screen: just background
+                xLo = xHi = 0.0f;
             }
         }
     }
 
-    // Inset to match the spectrum plot's data area so the frequency axes line
-    // up exactly between the two panels.
     ImVec2 avail = ImGui::GetContentRegionAvail();
-    float left = std::max(0.0f, app.specLeftInset);
-    float right = std::max(0.0f, app.specRightInset);
+    float left = std::max(0.0f, v.specLeftInset);
+    float right = std::max(0.0f, v.specRightInset);
     float w = avail.x - left - right;
     if (w < 1.0f)
     {
@@ -1074,7 +1182,7 @@ static void drawWaterfall(App& app)
     }
     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + left);
 
-    app.waterfall.draw(ImVec2(w, avail.y), uMin, uMax, xLo, xHi);
+    v.waterfall.draw(ImVec2(w, avail.y), uMin, uMax, xLo, xHi);
     ImGui::End();
 }
 
@@ -1502,9 +1610,11 @@ static void drawConstellation(App& app)
     ImGui::End();
 }
 
-static void drawDockHost()
+static void drawDockHost(App& app)
 {
     static bool forceLayout = true;
+    static bool lastDual = false;
+    if (app.dualMode != lastDual) { forceLayout = true; lastDual = app.dualMode; }
 
     ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
@@ -1536,14 +1646,23 @@ static void drawDockHost()
         ImGuiID left, right, rtop, rrest, rmid, rbot, rcon, ctrl, dec;
         ImGui::DockBuilderSplitNode(dockId, ImGuiDir_Left, 0.32f, &left, &right);
         ImGui::DockBuilderSplitNode(left, ImGuiDir_Up, 0.62f, &ctrl, &dec);
-        // Right column: Spectrum (short, top) / Waterfall (middle) / bottom row.
         ImGui::DockBuilderSplitNode(right, ImGuiDir_Up, 0.30f, &rtop, &rrest);
         ImGui::DockBuilderSplitNode(rrest, ImGuiDir_Up, 0.58f, &rmid, &rbot);
-        // Bottom row: Messages (left) | Constellation (right).
         ImGui::DockBuilderSplitNode(rbot, ImGuiDir_Right, 0.34f, &rcon, &rbot);
 
         ImGui::DockBuilderDockWindow("Control", ctrl);
         ImGui::DockBuilderDockWindow("Decoders", dec);
+
+        // In dual-SDR mode, split the spectrum and waterfall rows side-by-side
+        // so the voice SDR (B) gets its own live spectrum/waterfall.
+        if (app.dualMode)
+        {
+            ImGuiID rtopR, rmidR;
+            ImGui::DockBuilderSplitNode(rtop, ImGuiDir_Right, 0.5f, &rtopR, &rtop);
+            ImGui::DockBuilderSplitNode(rmid, ImGuiDir_Right, 0.5f, &rmidR, &rmid);
+            ImGui::DockBuilderDockWindow("Spectrum (Voice)", rtopR);
+            ImGui::DockBuilderDockWindow("Waterfall (Voice)", rmidR);
+        }
         ImGui::DockBuilderDockWindow("Spectrum", rtop);
         ImGui::DockBuilderDockWindow("Waterfall", rmid);
         ImGui::DockBuilderDockWindow("SUs", rbot);
@@ -1600,7 +1719,8 @@ int main(int, char**)
     ImGui_ImplOpenGL3_Init(glsl_version);
 
     App app;
-    buildWindow(app, kFftSizes[app.fftSizeIdx]);
+    buildWindow(app.viewA, kFftSizes[app.fftSizeIdx], app.dbMin);
+    buildWindow(app.viewB, kFftSizes[app.fftSizeIdx], app.dbMin);
     app.devices = app.sdr.listDevices();
 
     const ImVec4 clear_color = ImVec4(0.06f, 0.07f, 0.09f, 1.0f);
@@ -1613,10 +1733,12 @@ int main(int, char**)
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        drawDockHost();
+        drawDockHost(app);
 
         if (app.active->running())
-            processFft(app);
+            processFft(app.viewA, app, app.active->centerFreq(), app.active->sampleRate());
+        if (app.dualMode && app.sdrB.running())
+            processFft(app.viewB, app, app.sdrB.centerFreq(), app.sdrB.sampleRate());
 
         if (app.active->running())
             updateVoiceFollow(app);
@@ -1627,8 +1749,13 @@ int main(int, char**)
         updateFeed(app);
 
         drawControls(app);
-        drawSpectrum(app);
-        drawWaterfall(app);
+        drawSpectrum(app, app.viewA, app.decoders, "Spectrum", true, false);
+        drawWaterfall(app, app.viewA, "Waterfall");
+        if (app.dualMode)
+        {
+            drawSpectrum(app, app.viewB, app.decodersB, "Spectrum (Voice)", false, true);
+            drawWaterfall(app, app.viewB, "Waterfall (Voice)");
+        }
         drawDecoders(app);
         drawSUs(app);
         drawMessages(app);
@@ -1650,7 +1777,9 @@ int main(int, char**)
     }
 
     app.decoders.stop();
+    app.decodersB.stop();
     app.sdr.stop();
+    app.sdrB.stop();
     app.wav.stop();
     app.server.stop();
     app.hack.stop();

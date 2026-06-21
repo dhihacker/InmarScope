@@ -39,6 +39,11 @@ public:
     void start();
     void stop();
 
+    // Set before start(): disable this manager's audio device (so only one of
+    // several managers opens the speaker), and cap the worker-thread count.
+    void setAudioEnabled(bool on) { audioEnabled_ = on; }
+    void setMaxWorkers(int n) { maxWorkers_ = (n > 0) ? n : 1; }
+
     void feed(const float* iq, int nComplex);
 
     int  addDecoder(double freqHz, int baud);
@@ -120,4 +125,6 @@ private:
     int voiceMonitorId_ = -1;
     bool recordOn_ = false;
     std::string recordDir_ = "recordings";
+    bool audioEnabled_ = true;
+    int maxWorkers_ = 8;
 };
