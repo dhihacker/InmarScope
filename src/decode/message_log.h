@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -26,6 +27,8 @@ struct DecodedMessage
     double lat = 0.0;
     double lon = 0.0;
     int    alt = 0;        // altitude in feet (ADS-C)
+    std::string icao;      // ICAO 24-bit hex (ADS-C airframe id), if present
+    std::string flight;    // flight/callsign (ADS-C flight id), if present
 };
 
 class MessageLog
@@ -230,4 +233,76 @@ private:
     std::mutex mtx_;
     std::vector<NetworkChannel> chans_;
     SatInfo sat_;
+};
+
+// One tracked aircraft, keyed by Inmarsat AES ID, aggregated from ACARS/ADS-C.
+struct AircraftEntry
+{
+    uint32_t aesId = 0;
+    std::string icao;    // ICAO 24-bit hex (from ADS-C airframe id)
+    std::string reg;     // registration (ACARS)
+    std::string flight;  // flight / callsign
+    bool   hasPos = false;
+    double lat = 0.0;
+    double lon = 0.0;
+    int    alt = 0;
+    double posTime = 0.0;  // epoch sec of last position
+    double lastSeen = 0.0; // epoch sec of last message
+    uint64_t msgs = 0;
+    double freqMHz = 0.0;
+};
+
+// Thread-safe per-aircraft tracking table. Updated from decode worker threads,
+// snapshotted by the UI thread.
+class AircraftTable
+{
+public:
+    void update(const DecodedMessage& m, double nowSec)
+    {
+        if (m.aesId == 0)
+            return;
+        std::lock_guard<std::mutex> lk(mtx_);
+        AircraftEntry& e = byId_[m.aesId];
+        e.aesId = m.aesId;
+        if (!m.icao.empty())   e.icao = m.icao;
+        if (!m.reg.empty())    e.reg = m.reg;
+        if (!m.flight.empty()) e.flight = m.flight;
+        if (m.hasPos)
+        {
+            e.hasPos = true;
+            e.lat = m.lat;
+            e.lon = m.lon;
+            e.alt = m.alt;
+            e.posTime = nowSec;
+        }
+        e.lastSeen = nowSec;
+        e.freqMHz = m.freqMHz;
+        ++e.msgs;
+    }
+
+    std::vector<AircraftEntry> snapshot()
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        std::vector<AircraftEntry> out;
+        out.reserve(byId_.size());
+        for (auto& kv : byId_)
+            out.push_back(kv.second);
+        return out;
+    }
+
+    size_t count()
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        return byId_.size();
+    }
+
+    void clear()
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        byId_.clear();
+    }
+
+private:
+    std::mutex mtx_;
+    std::map<uint32_t, AircraftEntry> byId_;
 };

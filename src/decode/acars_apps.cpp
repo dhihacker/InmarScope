@@ -1,5 +1,7 @@
 #include "decode/acars_apps.h"
 
+#include <cstdio>
+#include <cstring>
 #include <mutex>
 
 extern "C" {
@@ -57,7 +59,7 @@ AcarsAppResult decodeAcarsApps(const std::string& label, const std::string& text
         la_vstring_destroy(vs, true);
     }
 
-    // Pull a position out of any ADS-C basic report group.
+    // Walk all ADS-C tags: position (basic report), flight id, airframe ICAO.
     la_proto_node* adscNode = la_proto_tree_find_adsc(node);
     if (adscNode && adscNode->data)
     {
@@ -67,14 +69,32 @@ AcarsAppResult decodeAcarsApps(const std::string& label, const std::string& text
             for (la_list* l = msg->tag_list; l != nullptr; l = l->next)
             {
                 la_adsc_tag_t* tag = static_cast<la_adsc_tag_t*>(l->data);
-                if (!tag || !tag->data || !isBasicReportTag(tag->tag))
+                if (!tag || !tag->data)
                     continue;
-                auto* br = static_cast<la_adsc_basic_report_t*>(tag->data);
-                r.hasPos = true;
-                r.lat = br->lat;
-                r.lon = br->lon;
-                r.alt = br->alt;
-                break;
+                if (!r.hasPos && isBasicReportTag(tag->tag))
+                {
+                    auto* br = static_cast<la_adsc_basic_report_t*>(tag->data);
+                    r.hasPos = true;
+                    r.lat = br->lat;
+                    r.lon = br->lon;
+                    r.alt = br->alt;
+                }
+                else if (tag->tag == 12) // flight id group
+                {
+                    auto* fid = static_cast<la_adsc_flight_id_t*>(tag->data);
+                    r.flightId.assign(fid->id, strnlen(fid->id, sizeof(fid->id)));
+                    // trim trailing spaces
+                    while (!r.flightId.empty() && r.flightId.back() == ' ')
+                        r.flightId.pop_back();
+                }
+                else if (tag->tag == 17) // airframe id group (ICAO 24-bit)
+                {
+                    auto* af = static_cast<la_adsc_airframe_id_t*>(tag->data);
+                    char hx[8];
+                    std::snprintf(hx, sizeof(hx), "%02X%02X%02X", af->icao_hex[0],
+                                  af->icao_hex[1], af->icao_hex[2]);
+                    r.icaoHex = hx;
+                }
             }
         }
     }

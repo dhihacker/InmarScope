@@ -77,12 +77,14 @@ static const char* suTypeName(uint8_t t)
 
 Decoder::Decoder(double subRate, double subCenterHz, double chanFreqHz, int baud,
                  int channelId, MessageLog* log, MessageLog* suLog, AudioOutput* audioSink,
-                 CassignLog* cassignLog, ChannelTable* netTable, EgcLog* egcLog)
+                 CassignLog* cassignLog, ChannelTable* netTable, EgcLog* egcLog,
+                 AircraftTable* acTable)
     : ddc_(subRate, chanFreqHz - subCenterHz, ddcRate(baud), ddcBw(baud)),
       log_(log),
       suLog_(suLog),
       cassignLog_(cassignLog),
       netTable_(netTable),
+      acTable_(acTable),
       subCenterHz_(subCenterHz),
       chanFreqHz_(chanFreqHz),
       baud_(baud),
@@ -285,11 +287,15 @@ void Decoder::onAcars2(const jaero_acars_msg* msg)
             m.lat = app.lat;
             m.lon = app.lon;
             m.alt = app.alt;
+            m.icao = app.icaoHex;
+            m.flight = app.flightId;
         }
     }
 
     if (log_)
         log_->add(m);
+    if (acTable_)
+        acTable_->update(m, (double)std::time(nullptr));
     ++msgCount_;
 }
 

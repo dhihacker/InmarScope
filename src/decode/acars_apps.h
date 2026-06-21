@@ -12,6 +12,8 @@ struct AcarsAppResult
     double lat = 0.0;
     double lon = 0.0;
     int    alt = 0;          // altitude in feet
+    std::string icaoHex;     // 6-hex ICAO 24-bit address (ADS-C airframe id), if present
+    std::string flightId;    // flight/callsign (ADS-C flight id), if present
 };
 
 // Decode the application inside an ACARS message given its label + text.
