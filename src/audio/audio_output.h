@@ -5,6 +5,8 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
+#include <vector>
 
 struct AudioOutputImpl; // defined in audio_output.cpp
 
@@ -17,6 +19,13 @@ public:
     bool start(int sampleRate = 8000);
     void stop();
     bool running() const;
+
+    // Playback device selection. listDevices() returns names with index 0 =
+    // "Default (system)"; setDevice() picks by that index and live-restarts the
+    // device if it is running.
+    std::vector<std::string> listDevices();
+    void setDevice(int index);
+    int  currentDevice() const;
 
     // Append PCM samples (mono int16). Safe from any thread.
     void push(const int16_t* pcm, int n);

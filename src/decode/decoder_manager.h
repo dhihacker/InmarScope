@@ -71,6 +71,11 @@ public:
     int  voiceMonitor() const { return voiceMonitorId_; }
     float audioLevel() { return audio_.level(); }
 
+    // Audio output device selection (index 0 = system default).
+    std::vector<std::string> audioDevices() { return audio_.listDevices(); }
+    void setAudioDevice(int index) { audio_.setDevice(index); }
+    int  audioDevice() { return audio_.currentDevice(); }
+
     // Voice call recording: every 8400 decoder writes its calls to WAV files
     // (one per call) in dir, independent of which channel is being monitored.
     void setRecording(bool on, const std::string& dir);

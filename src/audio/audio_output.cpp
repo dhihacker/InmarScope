@@ -13,8 +13,16 @@
 
 struct AudioOutputImpl
 {
+    ma_context context{};
+    bool ctxInited = false;
     ma_device device{};
     bool started = false;
+
+    std::vector<ma_device_info> playbackInfos; // cached enumeration
+    int  selected = 0;        // 0 = system default, else index into playbackInfos+1
+    bool hasId = false;
+    ma_device_id id{};
+    int  sampleRate = 8000;
 
     std::mutex mtx;
     std::vector<int16_t> ring;
@@ -22,6 +30,40 @@ struct AudioOutputImpl
     size_t rd = 0, wr = 0, count = 0;
 
     float levelRms = 0.0f;
+
+    bool ensureContext()
+    {
+        if (ctxInited)
+            return true;
+        if (ma_context_init(nullptr, 0, nullptr, &context) != MA_SUCCESS)
+            return false;
+        ctxInited = true;
+        return true;
+    }
+
+    bool openDevice()
+    {
+        ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
+        cfg.playback.format = ma_format_s16;
+        cfg.playback.channels = 1;
+        cfg.playback.pDeviceID = hasId ? &id : nullptr;
+        cfg.sampleRate = (ma_uint32)sampleRate;
+        cfg.pUserData = this;
+        cfg.dataCallback = +[](ma_device* dev, void* out, const void*, ma_uint32 frames) {
+            static_cast<AudioOutputImpl*>(dev->pUserData)->pullInto(static_cast<int16_t*>(out),
+                                                                    frames);
+        };
+        ma_context* ctx = ensureContext() ? &context : nullptr;
+        if (ma_device_init(ctx, &cfg, &device) != MA_SUCCESS)
+            return false;
+        if (ma_device_start(&device) != MA_SUCCESS)
+        {
+            ma_device_uninit(&device);
+            return false;
+        }
+        started = true;
+        return true;
+    }
 
     void pullInto(int16_t* out, ma_uint32 frames)
     {
@@ -44,17 +86,16 @@ struct AudioOutputImpl
     }
 };
 
-static void dataCallback(ma_device* dev, void* out, const void*, ma_uint32 frames)
-{
-    auto* impl = static_cast<AudioOutputImpl*>(dev->pUserData);
-    impl->pullInto(static_cast<int16_t*>(out), frames);
-}
-
 AudioOutput::AudioOutput() : impl_(new AudioOutputImpl) {}
 
 AudioOutput::~AudioOutput()
 {
     stop();
+    if (impl_->ctxInited)
+    {
+        ma_context_uninit(&impl_->context);
+        impl_->ctxInited = false;
+    }
 }
 
 bool AudioOutput::start(int sampleRate)
@@ -62,26 +103,12 @@ bool AudioOutput::start(int sampleRate)
     if (impl_->started)
         return true;
 
+    impl_->sampleRate = sampleRate;
     impl_->cap = (size_t)sampleRate; // ~1 s buffer
     impl_->ring.assign(impl_->cap, 0);
     impl_->rd = impl_->wr = impl_->count = 0;
 
-    ma_device_config cfg = ma_device_config_init(ma_device_type_playback);
-    cfg.playback.format = ma_format_s16;
-    cfg.playback.channels = 1;
-    cfg.sampleRate = (ma_uint32)sampleRate;
-    cfg.dataCallback = dataCallback;
-    cfg.pUserData = impl_.get();
-
-    if (ma_device_init(nullptr, &cfg, &impl_->device) != MA_SUCCESS)
-        return false;
-    if (ma_device_start(&impl_->device) != MA_SUCCESS)
-    {
-        ma_device_uninit(&impl_->device);
-        return false;
-    }
-    impl_->started = true;
-    return true;
+    return impl_->openDevice();
 }
 
 void AudioOutput::stop()
@@ -94,6 +121,56 @@ void AudioOutput::stop()
 }
 
 bool AudioOutput::running() const { return impl_->started; }
+
+std::vector<std::string> AudioOutput::listDevices()
+{
+    std::vector<std::string> names;
+    names.push_back("Default (system)");
+    if (!impl_->ensureContext())
+        return names;
+
+    ma_device_info* playback = nullptr;
+    ma_uint32 playbackCount = 0;
+    ma_device_info* capture = nullptr;
+    ma_uint32 captureCount = 0;
+    if (ma_context_get_devices(&impl_->context, &playback, &playbackCount, &capture,
+                               &captureCount) != MA_SUCCESS)
+        return names;
+
+    impl_->playbackInfos.assign(playback, playback + playbackCount);
+    for (ma_uint32 i = 0; i < playbackCount; ++i)
+        names.push_back(impl_->playbackInfos[i].name);
+    return names;
+}
+
+void AudioOutput::setDevice(int index)
+{
+    if (index == impl_->selected)
+        return;
+    impl_->selected = index;
+    if (index <= 0 || index > (int)impl_->playbackInfos.size())
+    {
+        impl_->hasId = false;
+        impl_->selected = 0;
+    }
+    else
+    {
+        impl_->id = impl_->playbackInfos[index - 1].id;
+        impl_->hasId = true;
+    }
+
+    // Live-restart on the newly selected device.
+    if (impl_->started)
+    {
+        ma_device_uninit(&impl_->device);
+        impl_->started = false;
+        std::lock_guard<std::mutex> lk(impl_->mtx);
+        impl_->rd = impl_->wr = impl_->count = 0;
+        impl_->openDevice();
+    }
+}
+
+int AudioOutput::currentDevice() const { return impl_->selected; }
 
 void AudioOutput::push(const int16_t* pcm, int n)
 {

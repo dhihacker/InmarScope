@@ -26,6 +26,7 @@
 #include <cmath>
 #include <complex>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <thread>
@@ -129,10 +130,16 @@ struct App
     int newBaud = 1; // 0 = 600, 1 = 1200 (baud for click-added decoders)
     int selectedDecoder = -1;     // channelId shown in the constellation panel
     std::vector<float> constBuf;  // interleaved I,Q scratch for the plot
+    double constLim = 1.0;        // cached constellation axis limit (held steady)
+    std::chrono::steady_clock::time_point constLimTime; // last time the scale updated
 
     // Voice call recording (8400). Saves every decoded call to its own WAV.
     bool recordVoice = false;
     char recordDir[256] = "recordings";
+
+    // Audio output device selection (index into audioDevs; 0 = system default).
+    int audioDevice = 0;
+    std::vector<std::string> audioDevs;
 
     // Message output feed (JSON / JAERO text -> file and/or UDP).
     MessageFeed feed;
@@ -196,6 +203,10 @@ struct App
     float  browseThrottleMs = 20.0f; // minimum time between retunes
     float  browseMinMovePct = 0.10f; // minimum view movement before retuning
     bool   acPosOnly = false;        // Aircraft panel: show only entries with a position
+    // Dock layout versioning: when the built-in default layout changes we bump
+    // kLayoutVersion so saved older layouts get replaced by the new default.
+    int    layoutVersion = 0;        // persisted; compared to kLayoutVersion
+    bool   forceDefaultLayout = false; // request drawDockHost to rebuild the default
 
     // Last sample rate the decoder manager was configured with; if the source
     // rate changes (e.g. SDR++ server rate switch), the manager + FFT are
@@ -403,16 +414,22 @@ static void updateVoiceFollow(App& app)
             app.followSeenCount = total;
             if (!pick) return;
             double rx = pick->rxMHz;
-            app.sdrB.setCenterFreq(rx * 1e6);
+            // Offset SDR B's center off the voice carrier so it avoids the RTL
+            // DC spike (centering exactly on it gives a bad constellation / no
+            // audio). The decoder still sits at the absolute rx frequency.
+            double fsBMHz = app.sdrB.sampleRate() / 1e6;
+            double offB = std::min(0.2, 0.25 * fsBMHz);
+            double bctr = rx - offB;
+            app.sdrB.setCenterFreq(bctr * 1e6);
             app.decodersB.removeAll();
-            app.decodersB.configure(app.sdrB.sampleRate(), rx * 1e6);
+            app.decodersB.configure(app.sdrB.sampleRate(), bctr * 1e6);
             app.viewB.resetView = true;
             if (app.viewB.curN > 0)
-                updateFreqAxis(app.viewB, rx * 1e6, app.sdrB.sampleRate(), app.viewB.curN);
+                updateFreqAxis(app.viewB, bctr * 1e6, app.sdrB.sampleRate(), app.viewB.curN);
             app.followChannelId = app.decodersB.addDecoder(rx * 1e6, 8400);
             if (app.followChannelId < 0) return;
             app.decodersB.setVoiceMonitor(app.followChannelId);
-            app.voiceCenterMHz = rx; // park B here when the call ends
+            app.voiceCenterMHz = bctr; // park B here when the call ends
             app.following = true;
             app.followRetuned = true;
             app.followEverLocked = false;
@@ -490,7 +507,12 @@ static void updateVoiceFollow(App& app)
             app.followHome.clear();
             for (auto& s : app.decoders.status())
                 app.followHome.push_back({s.freqMHz, s.baud});
-            retuneActive(app, rx);
+            // Don't center the SDR exactly on the voice carrier: that puts it on
+            // the RTL DC spike (kills the OQPSK demod). Offset the center so the
+            // signal sits clear of DC, like a manual decode does.
+            double fsMHz = app.active->sampleRate() / 1e6;
+            double off = std::min(0.2, 0.25 * fsMHz);
+            retuneActive(app, rx - off);
             app.followRetuned = true;
         }
 
@@ -1294,6 +1316,30 @@ static void drawDecoders(App& app)
     if (ImGui::SmallButton("Listen to selected"))
         app.decoders.setVoiceMonitor(app.selectedDecoder);
 
+    // Audio output device picker.
+    if (app.audioDevs.empty())
+        app.audioDevs = app.decoders.audioDevices();
+    {
+        std::vector<const char*> names;
+        names.reserve(app.audioDevs.size());
+        for (auto& s : app.audioDevs)
+            names.push_back(s.c_str());
+        if (app.audioDevice >= (int)names.size())
+            app.audioDevice = 0;
+        ImGui::SetNextItemWidth(-90.0f);
+        if (ImGui::Combo("Audio out", &app.audioDevice, names.data(), (int)names.size()))
+        {
+            app.decoders.setAudioDevice(app.audioDevice);
+            app.decodersB.setAudioDevice(app.audioDevice);
+        }
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Refresh##aud"))
+        {
+            app.audioDevs = app.decoders.audioDevices();
+            app.decodersB.audioDevices(); // keep B's cache aligned
+        }
+    }
+
     if (ImGui::Checkbox("Record voice calls", &app.recordVoice))
         app.decoders.setRecording(app.recordVoice, app.recordDir);
     ImGui::SameLine();
@@ -1430,10 +1476,11 @@ static void drawMessages(App& app)
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableHeadersRow();
 
+        int rowIdx = 0;
         for (auto it = msgs.rbegin(); it != msgs.rend(); ++it)
         {
             ImGui::TableNextRow();
-            ImGui::PushID((int)(it->timeSec * 1000.0) ^ (int)it->aesId ^ it->channelId);
+            ImGui::PushID(rowIdx++);
             ImGui::TableNextColumn();
             ImGui::Text("%.3f", it->freqMHz);
             ImGui::TableNextColumn();
@@ -1544,6 +1591,32 @@ static const char* cassignTypeName(uint8_t t)
     }
 }
 
+// Manually tune to a C-channel voice assignment: retune the SDR off the carrier
+// (DC avoidance) if it is out of band, then drop an 8400 voice decoder on it and
+// monitor it. Used by the C-Channel "Tune" button (works with auto-follow off).
+static void tuneToVoice(App& app, double rxMHz)
+{
+    if (rxMHz <= 1.0 || !app.active->running())
+        return;
+    double centerMHz = app.active->centerFreq() / 1e6;
+    double halfMHz = (app.active->sampleRate() / 1e6) * 0.45;
+    bool inBand = std::fabs(rxMHz - centerMHz) <= halfMHz;
+    if (!inBand)
+    {
+        if (app.sourceMode == 1)
+            return; // WAV: tuning is fixed to the file
+        double fsMHz = app.active->sampleRate() / 1e6;
+        double off = std::min(0.2, 0.25 * fsMHz);
+        retunePreserving(app, rxMHz - off); // move center off the carrier, keep decoders
+    }
+    int id = app.decoders.addDecoder(rxMHz * 1e6, 8400);
+    if (id >= 0)
+    {
+        app.decoders.setVoiceMonitor(id);
+        app.selectedDecoder = id;
+    }
+}
+
 static void drawCChannel(App& app)
 {
     ImGui::Begin("C-Channel");
@@ -1555,7 +1628,7 @@ static void drawCChannel(App& app)
     ImGui::Separator();
 
     auto items = app.decoders.cassignLog().snapshot();
-    if (ImGui::BeginTable("##cchan", 5,
+    if (ImGui::BeginTable("##cchan", 6,
                           ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
                           ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable))
     {
@@ -1564,23 +1637,44 @@ static void drawCChannel(App& app)
         ImGui::TableSetupColumn("GES", ImGuiTableColumnFlags_WidthFixed, 40);
         ImGui::TableSetupColumn("RX / down (MHz)");
         ImGui::TableSetupColumn("TX / up (MHz)");
+        ImGui::TableSetupColumn("", ImGuiTableColumnFlags_WidthFixed, 52);
         ImGui::TableSetupScrollFreeze(0, 1);
         ImGui::TableHeadersRow();
 
-        for (auto it = items.rbegin(); it != items.rend(); ++it)
+        // Oldest-first (newest appended at the bottom) so the list grows
+        // downward and doesn't shift content out from under a scrolled-up user.
+        for (size_t i = 0; i < items.size(); ++i)
         {
+            const auto& it = items[i];
             ImGui::TableNextRow();
+            ImGui::PushID((int)i);
             ImGui::TableNextColumn();
-            ImGui::TextUnformatted(cassignTypeName(it->type));
+            ImGui::TextUnformatted(cassignTypeName(it.type));
             ImGui::TableNextColumn();
-            ImGui::Text("%06X", it->aesId);
+            ImGui::Text("%06X", it.aesId);
             ImGui::TableNextColumn();
-            ImGui::Text("%02X", it->gesId);
+            ImGui::Text("%02X", it.gesId);
             ImGui::TableNextColumn();
-            ImGui::Text("%.4f", it->rxMHz);
+            ImGui::Text("%.4f", it.rxMHz);
             ImGui::TableNextColumn();
-            ImGui::Text("%.4f", it->txMHz);
+            ImGui::Text("%.4f", it.txMHz);
+            ImGui::TableNextColumn();
+            if (it.rxMHz > 1.0)
+            {
+                ImGui::BeginDisabled(!app.active->running() ||
+                                     (app.sourceMode == 1));
+                if (ImGui::SmallButton("Tune"))
+                    tuneToVoice(app, it.rxMHz);
+                ImGui::EndDisabled();
+            }
+            ImGui::PopID();
         }
+
+        // Keep pinned to the newest row only while the user is already at the
+        // bottom; if they scroll up, leave their position alone.
+        if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
+            ImGui::SetScrollHereY(1.0f);
+
         ImGui::EndTable();
     }
     ImGui::End();
@@ -1747,10 +1841,18 @@ static void drawConstellation(App& app)
     ImGui::SameLine();
     ImGui::TextDisabled("(%d pts)", pairs);
 
-    float m = 0.5f;
-    for (float v : app.constBuf)
-        m = std::max(m, std::fabs(v));
-    double lim = m * 1.15;
+    // Recompute the axis scale at most once per second so it holds steady
+    // instead of jittering as the constellation data changes every frame.
+    auto nowC = std::chrono::steady_clock::now();
+    if (std::chrono::duration<double>(nowC - app.constLimTime).count() >= 1.0)
+    {
+        float m = 0.5f;
+        for (float v : app.constBuf)
+            m = std::max(m, std::fabs(v));
+        app.constLim = m * 1.15;
+        app.constLimTime = nowC;
+    }
+    double lim = app.constLim;
 
     if (ImPlot::BeginPlot("##const", ImVec2(-1, -1),
                           ImPlotFlags_Equal | ImPlotFlags_NoLegend))
@@ -1767,9 +1869,117 @@ static void drawConstellation(App& app)
     ImGui::End();
 }
 
+// ---------------------------------------------------------------------------
+// Persistent settings: serialized into inmarscope.ini alongside the ImGui dock
+// layout via a custom settings handler.
+// ---------------------------------------------------------------------------
+static void cfgWriteAll(App& app, ImGuiTextBuffer* buf)
+{
+    buf->append("[InmarScope][State]\n");
+#define WI(f) buf->appendf(#f "=%d\n", (int)app.f)
+#define WF(f) buf->appendf(#f "=%g\n", (double)app.f)
+#define WD(f) buf->appendf(#f "=%.10g\n", (double)app.f)
+#define WS(f) buf->appendf(#f "=%s\n", app.f)
+    WI(sourceMode); WI(deviceIndex); WI(sampleRateIdx); WI(newBaud); WI(fftSizeIdx);
+    WI(audioDevice);
+    WD(centerFreqMHz);
+    WI(autoGain); WF(gainDb); WI(biasTee); WF(ppm); WI(dcBlock);
+    WI(autoScale); WI(bandBrowse); WF(avgAlpha); WF(dbMin); WF(dbMax);
+    WF(browseEdgePct); WF(browseThrottleMs); WF(browseMinMovePct);
+    WS(wavPath); WI(wavLoop);
+    WS(serverHost); WI(serverPort); WI(serverCompression); WI(serverSampleType);
+    WD(serverSampleRateMHz);
+    WD(hackSampleRateMHz); WI(hackLna); WI(hackVga); WI(hackAmp); WI(hackBias);
+    WI(voiceSdrEnabled); WI(deviceIndexB); WD(voiceCenterMHz); WI(sampleRateIdxB);
+    WI(autoGainB); WF(gainDbB); WI(biasTeeB); WF(ppmB);
+    WI(voiceFollow); WF(followHoldSec);
+    WI(recordVoice); WS(recordDir);
+    WI(acPosOnly);
+    WI(outFile); WS(outFilePath); WI(outUdp); WS(outUdpHost); WI(outUdpPort);
+    WI(outFormat); WS(outStation); WI(outSbs); WI(outSbsPort);
+    WI(layoutVersion);
+    buf->append("\n");
+#undef WI
+#undef WF
+#undef WD
+#undef WS
+}
+
+static void cfgReadLine(App& app, const char* line)
+{
+    const char* eq = std::strchr(line, '=');
+    if (!eq)
+        return;
+    char key[48];
+    int klen = (int)(eq - line);
+    if (klen <= 0 || klen >= (int)sizeof(key))
+        return;
+    std::memcpy(key, line, klen);
+    key[klen] = 0;
+    const char* val = eq + 1;
+#define RI(f) if (!std::strcmp(key, #f)) { app.f = std::atoi(val); return; }
+#define RB(f) if (!std::strcmp(key, #f)) { app.f = (std::atoi(val) != 0); return; }
+#define RF(f) if (!std::strcmp(key, #f)) { app.f = (float)std::atof(val); return; }
+#define RD(f) if (!std::strcmp(key, #f)) { app.f = std::atof(val); return; }
+#define RS(f) if (!std::strcmp(key, #f)) { std::strncpy(app.f, val, sizeof(app.f) - 1); app.f[sizeof(app.f) - 1] = 0; return; }
+    RI(sourceMode); RI(deviceIndex); RI(sampleRateIdx); RI(newBaud); RI(fftSizeIdx);
+    RI(audioDevice);
+    RD(centerFreqMHz);
+    RB(autoGain); RF(gainDb); RB(biasTee); RF(ppm); RB(dcBlock);
+    RB(autoScale); RB(bandBrowse); RF(avgAlpha); RF(dbMin); RF(dbMax);
+    RF(browseEdgePct); RF(browseThrottleMs); RF(browseMinMovePct);
+    RS(wavPath); RB(wavLoop);
+    RS(serverHost); RI(serverPort); RB(serverCompression); RI(serverSampleType);
+    RD(serverSampleRateMHz);
+    RD(hackSampleRateMHz); RI(hackLna); RI(hackVga); RB(hackAmp); RB(hackBias);
+    RB(voiceSdrEnabled); RI(deviceIndexB); RD(voiceCenterMHz); RI(sampleRateIdxB);
+    RB(autoGainB); RF(gainDbB); RB(biasTeeB); RF(ppmB);
+    RB(voiceFollow); RF(followHoldSec);
+    RB(recordVoice); RS(recordDir);
+    RB(acPosOnly);
+    RB(outFile); RS(outFilePath); RB(outUdp); RS(outUdpHost); RI(outUdpPort);
+    RI(outFormat); RS(outStation); RB(outSbs); RI(outSbsPort);
+    RI(layoutVersion);
+#undef RI
+#undef RB
+#undef RF
+#undef RD
+#undef RS
+}
+
+static void cfgRegisterHandler(App& app)
+{
+    ImGuiSettingsHandler h;
+    h.TypeName = "InmarScope";
+    h.TypeHash = ImHashStr("InmarScope");
+    h.UserData = &app;
+    h.ReadOpenFn = [](ImGuiContext*, ImGuiSettingsHandler*, const char* name) -> void* {
+        return std::strcmp(name, "State") == 0 ? (void*)1 : nullptr;
+    };
+    h.ReadLineFn = [](ImGuiContext*, ImGuiSettingsHandler* handler, void* entry,
+                      const char* line) {
+        if (!entry)
+            return;
+        cfgReadLine(*static_cast<App*>(handler->UserData), line);
+    };
+    h.WriteAllFn = [](ImGuiContext*, ImGuiSettingsHandler* handler, ImGuiTextBuffer* buf) {
+        cfgWriteAll(*static_cast<App*>(handler->UserData), buf);
+    };
+    ImGui::AddSettingsHandler(&h);
+}
+
+// Bump this whenever the built-in default dock layout changes so saved older
+// layouts are replaced by the new default on next launch.
+static constexpr int kLayoutVersion = 1;
+
 static void drawDockHost(App& app)
 {
-    static bool forceLayout = true;
+    // Default to NOT forcing a rebuild: if inmarscope.ini holds a saved layout,
+    // the dock node already exists and we keep it. Only build the default layout
+    // on first run (no node) or when explicitly forced (Reset Layout / dual /
+    // a layout-version bump).
+    static bool forceLayout = false;
+    if (app.forceDefaultLayout) { forceLayout = true; app.forceDefaultLayout = false; }
     static bool lastDual = false;
     if (app.dualMode != lastDual) { forceLayout = true; lastDual = app.dualMode; }
 
@@ -1877,9 +2087,29 @@ int main(int, char**)
     ImGui_ImplOpenGL3_Init(glsl_version);
 
     App app;
+
+    // Persistent settings + dock layout live in inmarscope.ini. Register our
+    // custom handler and load the file before init so the saved values take
+    // effect (FFT size, dB scale, source, etc.).
+    cfgRegisterHandler(app);
+    io.IniFilename = "inmarscope.ini";
+    ImGui::LoadIniSettingsFromDisk(io.IniFilename);
+
+    // If the saved layout predates the current default (or none was saved),
+    // rebuild the canonical default layout so users get the intended arrangement.
+    if (app.layoutVersion != kLayoutVersion)
+    {
+        app.forceDefaultLayout = true;
+        app.layoutVersion = kLayoutVersion;
+    }
+
     buildWindow(app.viewA, kFftSizes[app.fftSizeIdx], app.dbMin);
     buildWindow(app.viewB, kFftSizes[app.fftSizeIdx], app.dbMin);
     app.devices = app.sdr.listDevices();
+    app.audioDevs = app.decoders.audioDevices();
+    app.decodersB.audioDevices(); // prime SDR B's device cache for id resolution
+    app.decoders.setAudioDevice(app.audioDevice);  // apply persisted audio device
+    app.decodersB.setAudioDevice(app.audioDevice);
     app.verCheck.start("inmarscope", INMARSCOPE_VERSION);
 
     const ImVec4 clear_color = ImVec4(0.06f, 0.07f, 0.09f, 1.0f);
@@ -1935,6 +2165,9 @@ int main(int, char**)
 
         glfwSwapBuffers(window);
     }
+
+    // Persist settings + dock layout to inmarscope.ini before shutting down.
+    ImGui::SaveIniSettingsToDisk(io.IniFilename);
 
     app.decoders.stop();
     app.decodersB.stop();

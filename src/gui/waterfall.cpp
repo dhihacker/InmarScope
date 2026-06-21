@@ -12,6 +12,12 @@
 #include <algorithm>
 #include <cmath>
 
+// Cap the waterfall texture width: FFT sizes (32768/65536) exceed the GPU's
+// GL_MAX_TEXTURE_SIZE (often 16384), which fails the texture allocation and
+// breaks the waterfall. A few thousand columns is far more than any display
+// needs, so we max-pool the bins down to this width when the FFT is larger.
+static constexpr int kMaxTexW = 4096;
+
 Waterfall::~Waterfall()
 {
     if (tex_)
@@ -74,13 +80,30 @@ void Waterfall::addRow(const float* db, int n, float dbMin, float dbMax)
 {
     if (n <= 0)
         return;
-    ensureTexture(n);
+    int w = (n > kMaxTexW) ? kMaxTexW : n; // texture width (capped)
+    ensureTexture(w);
 
     rowBuf_.resize((size_t)texW_ * 4);
     float span = (dbMax > dbMin) ? (dbMax - dbMin) : 1.0f;
     for (int i = 0; i < texW_; ++i)
     {
-        float t = (db[i] - dbMin) / span;
+        float v;
+        if (w == n)
+        {
+            v = db[i];
+        }
+        else
+        {
+            // Max-pool the FFT bins covering this output column (keeps peaks).
+            int lo = (int)((long long)i * n / w);
+            int hi = (int)((long long)(i + 1) * n / w);
+            if (hi <= lo) hi = lo + 1;
+            if (hi > n) hi = n;
+            v = db[lo];
+            for (int k = lo + 1; k < hi; ++k)
+                if (db[k] > v) v = db[k];
+        }
+        float t = (v - dbMin) / span;
         uint8_t r, g, b;
         colormap(t, r, g, b);
         rowBuf_[i * 4 + 0] = r;
