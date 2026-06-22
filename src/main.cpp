@@ -17,6 +17,7 @@
 #include "sdr/sdrpp_server_source.h"
 #include "decode/decoder_manager.h"
 #include "decode/icao_country.h"
+#include "util/log.h"
 #include "output/message_feed.h"
 #include "update/version_check.h"
 #include "version.h"
@@ -87,6 +88,17 @@ struct SpectrumView
     double viewXminMHz = 0.0, viewXmaxMHz = 0.0;
     bool resetView = true;
     float specLeftInset = 0.0f, specRightInset = 0.0f;
+};
+
+// CallHunter: auto-detect 8400 voice signals in the visible spectrum.
+struct CallHunterCand
+{
+    double freqMHz = 0.0;   // centroid frequency
+    double peakDB = -999.0; // latest peak magnitude
+    int confirmCount = 0;   // consecutive frames above threshold
+    int lostCount = 0;      // consecutive frames below threshold
+    int channelId = -1;     // spawned decoder id, or -1
+    bool matched = false;   // matched by a peak this frame
 };
 
 struct App
@@ -208,6 +220,16 @@ struct App
     float  browseMinMovePct = 0.10f; // minimum view movement before retuning
     bool   acPosOnly = false;        // Aircraft panel: show only entries with a position
     bool   showEmptyMsgs = false;    // Messages panel: show ACARS msgs with no text/decoded body
+
+    // CallHunter: auto-scan the visible spectrum for new 8400 voice calls.
+    bool  callHunterMode = false;
+    float callHunterThreshDB = 2.0f;  // dB above baseline for detection
+    int   callHunterConfirm = 10;      // frames a new peak must persist before spawning
+    int   callHunterLost = 30;         // frames a spawned signal must be gone before removing
+    std::vector<CallHunterCand> callHunterCands;
+    std::vector<float> callHunterBaseline; // per-bin slow-EMA baseline
+    int    callHunterWarmup = 0;       // remaining settling frames (starts at ~60)
+    double callHunterLastCenter = 0.0; // SDR center when baseline was built
     // Dock layout versioning: when the built-in default layout changes we bump
     // kLayoutVersion so saved older layouts get replaced by the new default.
     int    layoutVersion = 0;        // persisted; compared to kLayoutVersion
@@ -1068,6 +1090,25 @@ static void drawControls(App& app)
     }
 
     ImGui::Separator();
+    if (ImGui::CollapsingHeader("CallHunter (auto-scan for voice)"))
+    {
+        ImGui::Checkbox("Enable CallHunter", &app.callHunterMode);
+        ImGui::SliderFloat("Threshold (dB above baseline)", &app.callHunterThreshDB, 1.0f, 20.0f, "%.1f");
+        ImGui::SliderInt("Confirm frames", &app.callHunterConfirm, 5, 60);
+        ImGui::SliderInt("Lost frames", &app.callHunterLost, 10, 120);
+
+        int activeN = 0, candN = (int)app.callHunterCands.size();
+        for (auto& c : app.callHunterCands)
+            if (c.channelId >= 0) ++activeN;
+        if (app.callHunterWarmup > 0)
+            ImGui::TextDisabled("Settling baseline... (%d)", app.callHunterWarmup);
+        else
+            ImGui::TextDisabled("Candidates: %d tracked, %d decoders active", candN, activeN);
+        if (app.following)
+            ImGui::TextDisabled("(paused — voice‑follow is active)");
+    }
+
+    ImGui::Separator();
     if (ImGui::CollapsingHeader("Voice SDR (2nd RTL)"))
     {
         ImGui::BeginDisabled(running);
@@ -1410,6 +1451,10 @@ static void drawDecoders(App& app)
     {
         app.decoders.setRecording(app.recordVoice, app.recordDir);
         app.decodersB.setRecording(app.recordVoice, app.recordDir);
+        // Re-apply the format so it always matches the current combo choice.
+        RecordFormat rf = (app.recordFormat == 1) ? RecordFormat::OGG : RecordFormat::WAV;
+        app.decoders.setRecordFormat(rf);
+        app.decodersB.setRecordFormat(rf);
     }
     ImGui::SameLine();
     const char* recFmts[] = {"WAV", "OGG"};
@@ -1422,8 +1467,9 @@ static void drawDecoders(App& app)
     }
     ImGui::SameLine();
     if (app.recordVoice)
-        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "REC  (%d active)",
-                           app.decoders.recordingCount());
+        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "REC  (%d active, %s)",
+                           app.decoders.recordingCount(),
+                           app.recordFormat ? "OGG" : "WAV");
     else
         ImGui::TextDisabled("(saves every 8400 call to its own %s)",
                             app.recordFormat ? "OGG" : "WAV");
@@ -2065,6 +2111,218 @@ static void cfgRegisterHandler(App& app)
 // layouts are replaced by the new default on next launch.
 static constexpr int kLayoutVersion = 1;
 
+// ---------------------------------------------------------------------------
+// CallHunter: auto‑detect 8400 voice calls in the visible spectrum.
+// ---------------------------------------------------------------------------
+static void updateCallHunter(App& app)
+{
+    if (!app.callHunterMode)
+    {
+        app.callHunterWarmup = 0;
+        app.callHunterBaseline.clear();
+        return;
+    }
+    if (app.following)
+        return;
+    if (!app.active->running())
+        return;
+
+    SpectrumView& v = app.viewA;
+    if (v.curN <= 0 || (int)v.avg.size() < v.curN)
+        return;
+
+    // Reset the baseline when FFT size or SDR centre changes.
+    double curCenter = app.active->centerFreq();
+    if (app.callHunterBaseline.empty() ||
+        (int)app.callHunterBaseline.size() != v.curN ||
+        std::abs(curCenter - app.callHunterLastCenter) > 1e3)
+    {
+        app.callHunterBaseline.assign(v.avg.begin(), v.avg.begin() + v.curN);
+        app.callHunterWarmup = 60; // ~3 s at 20 FPS — let the baseline settle
+        app.callHunterLastCenter = curCenter;
+    }
+
+    // Slow EMA update of the baseline so background signals fade in gradually
+    // but transient peaks (new voice calls) don't pull it up.  Bins under an
+    // already‑spawned CallHunter decoder are frozen — otherwise the baseline
+    // would absorb the signal and the decoder would be removed prematurely.
+    std::vector<uint8_t> freeze(v.curN, 0);
+    for (auto& c : app.callHunterCands)
+    {
+        if (c.channelId >= 0)
+        {
+            int lo = 0, hi = v.curN - 1;
+            // Freeze bins within ±3 kHz of the spawned decoder.
+            for (int i = 0; i < v.curN; ++i)
+            {
+                if (std::abs(v.freqMHz[i] - c.freqMHz) < 0.003)
+                    freeze[i] = 1;
+            }
+        }
+    }
+    for (int i = 0; i < v.curN; ++i)
+        if (!freeze[i])
+            app.callHunterBaseline[i] = 0.999f * app.callHunterBaseline[i] + 0.001f * v.avg[i];
+
+    // Still settling — don't flag anything yet or the 90 existing signals fire.
+    if (app.callHunterWarmup > 0)
+    {
+        --app.callHunterWarmup;
+        return;
+    }
+
+    // Only hunt within the intersection of the user's view and the captured band.
+    double bandMin = v.freqMHz.front();
+    double bandMax = v.freqMHz.back();
+    if (bandMax <= bandMin)
+        return;
+    double visMin = std::max(bandMin, v.viewXminMHz);
+    double visMax = std::min(bandMax, v.viewXmaxMHz);
+    if (visMax <= visMin)
+        return;
+    int iLo = (int)((visMin - bandMin) / (bandMax - bandMin) * v.curN);
+    int iHi = (int)((visMax - bandMin) / (bandMax - bandMin) * v.curN);
+    iLo = std::clamp(iLo, 0, v.curN);
+    iHi = std::clamp(iHi, 0, v.curN);
+    if (iHi - iLo < 4)
+        return;
+
+    // Find peaks in the *difference* between current PSD and baseline.
+    float thresh = app.callHunterThreshDB;
+    // Minimum peak width: real 8400 voice is ~10 kHz wide, noise spikes are
+    // only a few bins.  Require at least ~3 kHz to reject narrow false positives.
+    double binResHz = (bandMax - bandMin) * 1e6 / v.curN; // Hz per FFT bin
+    int minWidthBins = std::max(1, (int)(3000.0 / binResHz));
+    struct Peak { double f; float vv; };
+    std::vector<Peak> peaks;
+    {
+        int start = -1;
+        for (int i = iLo; i < iHi; ++i)
+        {
+            float diff = v.avg[i] - app.callHunterBaseline[i];
+            bool above = (diff >= thresh);
+            if (above && start < 0) start = i;
+            if (!above && start >= 0)
+            {
+                int wBins = i - start;
+                if (wBins < minWidthBins)
+                    start = -1; // too narrow — noise spike
+                else
+                {
+                    double sumF = 0, sumW = 0; float bestV = -999;
+                    for (int k = start; k < i; ++k)
+                    {
+                        float diffK = v.avg[k] - app.callHunterBaseline[k];
+                        if (diffK < 0) diffK = 0;
+                        double w = std::pow(10.0, diffK / 10.0);
+                        sumF += v.freqMHz[k] * w;
+                        sumW += w;
+                        if (diffK > bestV) bestV = diffK;
+                    }
+                    if (sumW > 0.0)
+                        peaks.push_back({sumF / sumW, bestV});
+                    start = -1;
+                }
+            }
+        }
+    }
+
+    // Match peaks to existing candidates (±3 kHz).
+    const double kSearchKHz = 0.003;
+    for (auto& c : app.callHunterCands)
+        c.matched = false;
+    for (auto& p : peaks)
+    {
+        bool found = false;
+        for (auto& c : app.callHunterCands)
+        {
+            if (std::abs(p.f - c.freqMHz) < kSearchKHz)
+            {
+                c.freqMHz = 0.7 * c.freqMHz + 0.3 * p.f;
+                c.confirmCount++;
+                c.lostCount = 0;
+                c.matched = true;
+                found = true;
+                break;
+            }
+        }
+        if (!found)
+        {
+            CallHunterCand c;
+            c.freqMHz = p.f;
+            c.confirmCount = 1;
+            c.matched = true;
+            app.callHunterCands.push_back(c);
+        }
+    }
+
+    for (auto& c : app.callHunterCands)
+    {
+        if (!c.matched)
+        {
+            // Spawned decoders: don't mark as lost if the absolute signal level
+            // at this frequency is still strong (in case the peak was missed for
+            // any reason, e.g. baseline hasn't fully frozen).
+            if (c.channelId >= 0)
+            {
+                // Find the nearest bin and check absolute PSD vs baseline.
+                int bi = -1; double bd = 1e9;
+                for (int i = 0; i < v.curN; ++i)
+                {
+                    double d = std::abs(v.freqMHz[i] - c.freqMHz);
+                    if (d < bd) { bd = d; bi = i; }
+                }
+                if (bi >= 0 && (v.avg[bi] - app.callHunterBaseline[bi] >= 3.0f))
+                    continue; // signal still present — don't count as lost
+            }
+            c.confirmCount = 0;
+            c.lostCount++;
+        }
+    }
+
+    const double kDecoderCover = 0.0025;
+    auto hasExistingDecoder = [&](double f) {
+        for (auto& s : app.decoders.status())
+            if (std::abs(s.freqMHz - f) < kDecoderCover) return true;
+        if (app.dualMode)
+            for (auto& s : app.decodersB.status())
+                if (std::abs(s.freqMHz - f) < kDecoderCover) return true;
+        return false;
+    };
+
+    for (auto& c : app.callHunterCands)
+    {
+        if (c.channelId < 0 && c.confirmCount >= app.callHunterConfirm)
+        {
+            if (hasExistingDecoder(c.freqMHz))
+            {
+                c.channelId = -2;
+                continue;
+            }
+            int id = app.decoders.addDecoder(c.freqMHz * 1e6, 8400);
+            if (id >= 0)
+                c.channelId = id;
+        }
+    }
+
+    for (size_t j = 0; j < app.callHunterCands.size();)
+    {
+        auto& c = app.callHunterCands[j];
+        if (c.channelId >= 0 && c.lostCount >= app.callHunterLost)
+        {
+            app.decoders.removeDecoder(c.channelId);
+            app.callHunterCands.erase(app.callHunterCands.begin() + j);
+            continue;
+        }
+        if (c.channelId == -2 || (c.channelId < 0 && c.lostCount > app.callHunterLost * 3))
+        {
+            app.callHunterCands.erase(app.callHunterCands.begin() + j);
+            continue;
+        }
+        ++j;
+    }
+}
+
 static void drawDockHost(App& app)
 {
     // Default to NOT forcing a rebuild: if inmarscope.ini holds a saved layout,
@@ -2229,6 +2487,9 @@ int main(int, char**)
 
         if (app.active->running())
             updateVoiceFollow(app);
+
+        if (app.active->running())
+            updateCallHunter(app);
 
         if (app.active->running())
             updateRateChange(app);

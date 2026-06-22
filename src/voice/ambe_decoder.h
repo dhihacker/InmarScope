@@ -18,7 +18,9 @@ public:
     static constexpr int kPcmSamples = 160; // 20 ms @ 8 kHz
 
     // Decode one 12-byte AMBE frame into 160 int16 PCM samples.
-    void decode(const uint8_t* frame12, int16_t out[kPcmSamples]);
+    // Returns the cumulative Hamming ECC error count (0 = perfect, >3 = severely
+    // damaged — the caller should drop the frame).
+    int decode(const uint8_t* frame12, int16_t out[kPcmSamples]);
 
 private:
     struct Impl;

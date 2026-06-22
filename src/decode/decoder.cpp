@@ -6,7 +6,9 @@
 #include "audio/audio_output.h"
 #include "decode/egc/egc_decoder.h"
 #include "decode/acars_apps.h"
+#include "util/log.h"
 
+#include <cmath>
 #include <cstdio>
 #include <ctime>
 #include <filesystem>
@@ -337,6 +339,13 @@ void Decoder::onDecoded(const uint8_t* data, int len)
             double f2 = ch2 * 0.0025 + 1510.0;
             double f3 = ch3 * 0.0025 + 1510.0;
             int lsu = b3 & 0x03;
+
+            // Diagnostic: dump the raw bytes and computed channels so we can
+            // reverse-engineer the correct byte layout against known frequencies.
+            logWrite("SU 0x05 hex=%s", m.hex.c_str());
+            logWrite("  b3=%02X ges=%02X lsu=%d  ch1=%d(%.4f) ch2=%d(%.4f) ch3=%d(%.4f)",
+                     b3, ges, lsu, ch1, f1, ch2, f2, ch3, f3);
+
             if (lsu <= 1)
             {
                 f2 += 101.5;
@@ -375,6 +384,9 @@ void Decoder::onDecoded(const uint8_t* data, int len)
                 std::snprintf(lonbuf, sizeof(lonbuf), "%.1fW", 360.0 - lon);
             else
                 std::snprintf(lonbuf, sizeof(lonbuf), "%.1fE", lon);
+            logWrite("SU 0x0C hex=%s", m.hex.c_str());
+            logWrite("  satid=%d lon=%.1f  cac1=%d(%.4f) cac2=%d(%.4f)",
+                     satid, lon, ch1, cac1, ch2, cac2);
             netTable_->setSatellite(satid, lonbuf);
             netTable_->addChannel(cac1, "CAC/Psmc1 (P-ch RX)", 0, true, 1200);
             if (ch2)
@@ -414,8 +426,27 @@ void Decoder::onVoice(const uint8_t* frame, int len)
     if (!ambe_ || len != AmbeDecoder::kFrameBytes)
         return;
     int16_t pcm[AmbeDecoder::kPcmSamples];
-    ambe_->decode(frame, pcm);
-    voiceFrames_.fetch_add(1); // decoded-audio activity signal (used by voice-follow)
+    int errs2 = ambe_->decode(frame, pcm);
+    // Count even damaged frames for voice-follow activity (so marginal calls
+    // don't timeout prematurely).
+    voiceFrames_.fetch_add(1);
+
+    // Drop severely ECC-damaged frames (mbelib would conceal them anyway).
+    if (errs2 > 3)
+        return;
+
+    // Drop frames where the decoded PCM energy is abnormally high: corrupted
+    // frames can produce full-scale white noise that sounds like a screech.
+    // Real AMBE voice at normal levels peaks well below this.
+    {
+        double sumSq = 0.0;
+        for (int i = 0; i < AmbeDecoder::kPcmSamples; ++i)
+            sumSq += (double)pcm[i] * pcm[i];
+        double rms = std::sqrt(sumSq / (double)AmbeDecoder::kPcmSamples);
+        if (rms > 18000.0) // ~55 % of full scale
+            return;
+    }
+
     if (record_.load())
         recordPcm(pcm, AmbeDecoder::kPcmSamples);
     if (monitored_.load() && audioSink_)
@@ -426,6 +457,13 @@ void Decoder::setRecording(bool on, const std::string& dir, RecordFormat fmt)
 {
     if (on && !dir.empty())
         recordDir_ = dir;
+    // Format changed while a call is being recorded: close the current file so
+    // the very next voice frame opens a new one in the new format.
+    if (record_.load() && fmt != recordFmt_)
+    {
+        if (rec_) rec_->close();
+        recActive_.store(false);
+    }
     recordFmt_ = fmt;
     record_.store(on);
 }

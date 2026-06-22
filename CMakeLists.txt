@@ -135,6 +135,7 @@ add_executable(InmarScope
     src/decode/decoder_manager.cpp
     src/decode/acars_apps.cpp
     src/decode/icao_country.cpp
+    src/util/log.cpp
     src/decode/egc/egc_decoder.cpp
     src/voice/ambe_decoder.cpp
     src/voice/wav_writer.cpp
@@ -153,7 +154,20 @@ target_include_directories(InmarScope PRIVATE
 target_compile_definitions(InmarScope PRIVATE _USE_MATH_DEFINES)
 find_library(ZSTD_LIBRARIES NAMES zstd libzstd REQUIRED)
 find_library(ZLIB_LIB NAMES z libz zlib REQUIRED)
-target_link_libraries(InmarScope PRIVATE imgui jaero_dsp mbelib acars_static ${ZLIB_LIB} ${RTLSDR_LIBRARIES} ${HACKRF_LIBRARIES} ${ZSTD_LIBRARIES})
+
+# libogg + libvorbis for OGG Vorbis voice recording.
+if(PkgConfig_FOUND)
+    pkg_check_modules(OGG REQUIRED ogg)
+    pkg_check_modules(VORBIS REQUIRED vorbis)
+    pkg_check_modules(VORBISENC REQUIRED vorbisenc)
+endif()
+if(NOT OGG_FOUND OR NOT VORBIS_FOUND)
+    find_library(OGG_LIBRARIES NAMES ogg libogg REQUIRED)
+    find_library(VORBIS_LIBRARIES NAMES vorbis libvorbis REQUIRED)
+    find_library(VORBISENC_LIBRARIES NAMES vorbisenc libvorbisenc REQUIRED)
+endif()
+
+target_link_libraries(InmarScope PRIVATE imgui jaero_dsp mbelib acars_static ${ZLIB_LIB} ${RTLSDR_LIBRARIES} ${HACKRF_LIBRARIES} ${ZSTD_LIBRARIES} ${OGG_LIBRARIES} ${VORBIS_LIBRARIES} ${VORBISENC_LIBRARIES})
 target_link_directories(InmarScope PRIVATE ${RTLSDR_LIBRARY_DIRS})
 
 if(WIN32)
@@ -185,6 +199,9 @@ if(WIN32)
         libusb-1.0.dll
         libzstd.dll
         zlib1.dll
+        libogg-0.dll
+        libvorbis-0.dll
+        libvorbisenc-2.dll
     )
     foreach(dll ${FRAMESYNC_RUNTIME_DLLS})
         if(EXISTS "${MINGW_BIN}/${dll}")

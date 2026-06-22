@@ -5,9 +5,8 @@
 #include <cstdio>
 #include <string>
 
-struct ma_encoder; // forward: miniaudio OGG encoder used in the .cpp
-
 enum class RecordFormat { WAV = 0, OGG = 1 };
+struct WavWriterOggImpl; // OGG Vorbis state (defined in the .cpp, uses libvorbis)
 
 class WavWriter
 {
@@ -45,5 +44,5 @@ private:
     int channels_ = 1;
 
     // OGG state
-    ma_encoder* ogg_ = nullptr; // allocated in open(), freed in closeOgg()
+    WavWriterOggImpl* ogg_ = nullptr;
 };

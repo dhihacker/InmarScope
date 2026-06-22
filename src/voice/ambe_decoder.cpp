@@ -34,7 +34,7 @@ AmbeDecoder::AmbeDecoder() : impl_(new Impl)
 
 AmbeDecoder::~AmbeDecoder() = default;
 
-void AmbeDecoder::decode(const uint8_t* data, int16_t out[kPcmSamples])
+int AmbeDecoder::decode(const uint8_t* data, int16_t out[kPcmSamples])
 {
     unsigned char bits[96];
     for (int x = 0; x < kFrameBytes; ++x)
@@ -46,6 +46,7 @@ void AmbeDecoder::decode(const uint8_t* data, int16_t out[kPcmSamples])
 
     int errs = 0, errs2 = 0;
     mbe_processAmbe4800x3600Frame(out, &errs, &errs2, impl_->errbuf, impl_->ambe_fr,
-                                  impl_->ambe_d, &impl_->current, &impl_->prev,
-                                  &impl_->prev_mp_enhanced, 1);
+                                   impl_->ambe_d, &impl_->current, &impl_->prev,
+                                   &impl_->prev_mp_enhanced, 1);
+    return errs2;
 }
