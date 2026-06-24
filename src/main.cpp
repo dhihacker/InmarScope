@@ -8,6 +8,10 @@
 #include "implot.h"
 
 #include <GLFW/glfw3.h>
+#if defined(_WIN32)
+#define GLFW_EXPOSE_NATIVE_WIN32
+#include <GLFW/glfw3native.h>
+#endif
 
 #include "core/app.h"
 #include "decode/icao_country.h"
@@ -69,6 +73,10 @@ static void glfw_error_callback(int error, const char* description)
 
 int main(int, char**)
 {
+#if defined(_WIN32)
+    // WebView2 requires STA — init before GLFW so the UI thread IS the STA thread.
+    CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+#endif
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
         return 1;
@@ -127,6 +135,9 @@ int main(int, char**)
         app.decodersB.setRecordFormat(rf);
     }
     app.verCheck.start("inmarscope", INMARSCOPE_VERSION);
+#if defined(_WIN32)
+    app.flightMapWv.init(glfwGetWin32Window(window));
+#endif
 
     const ImVec4 clear_color = ImVec4(0.06f, 0.07f, 0.09f, 1.0f);
 
@@ -171,6 +182,7 @@ int main(int, char**)
         drawNetwork(app);
         drawEgc(app);
         drawAircraft(app);
+        drawFlightMap(app);
         drawConstellation(app);
 
         int display_w, display_h;

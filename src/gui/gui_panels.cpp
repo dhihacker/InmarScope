@@ -1130,6 +1130,61 @@ void drawNetwork(App& app)
     ImGui::End();
 }
 
+void drawFlightMap(App& app)
+{
+    ImGui::Begin("Flight Map");
+
+    auto acs = app.decoders.aircraftTable().snapshot();
+    std::sort(acs.begin(), acs.end(),
+              [](const AircraftEntry& a, const AircraftEntry& b) { return a.lastSeen > b.lastSeen; });
+    const AircraftEntry* pick = nullptr;
+    for (auto& a : acs)
+        if (!a.icao.empty()) { pick = &a; break; }
+
+    if (pick && !app.flightMapWv.isReady())
+    {
+        ImGui::Text("%s  %s  %06X",
+                    pick->icao.c_str(),
+                    pick->flight.empty() ? pick->reg.c_str() : pick->flight.c_str(),
+                    pick->aesId);
+        if (pick->hasPos)
+            ImGui::SameLine(); ImGui::Text("  %.4f,%.4f  %d ft", pick->lat, pick->lon, pick->alt);
+    }
+    else if (!pick && !app.flightMapWv.isReady())
+    {
+        ImGui::TextDisabled("No aircraft with ICAO yet.");
+    }
+
+#if defined(_WIN32)
+    if (!app.flightMapWv.isReady())
+    {
+        ImGui::TextDisabled("  Loading map...");
+    }
+    // Embed the map as an Edge WebView2 child window inside this panel.
+    // Hide when another tab in the same dock is active.
+    ImVec2 pos  = ImGui::GetCursorScreenPos();
+    ImVec2 avail = ImGui::GetContentRegionAvail();
+    int w = std::max(1, (int)avail.x);
+    int h = std::max(1, (int)avail.y);
+    bool tabActive = true;
+    if (ImGuiDockNode* node = ImGui::GetCurrentWindow()->DockNode)
+        tabActive = (node->VisibleWindow == ImGui::GetCurrentWindow());
+    ImGui::InvisibleButton("##map", ImVec2((float)w, (float)h));
+    app.flightMapWv.setBounds((int)pos.x, (int)pos.y, w, h, tabActive);
+
+    static std::string lastIcao;
+    if (pick && pick->icao != lastIcao)
+    {
+        lastIcao = pick->icao;
+        app.flightMapWv.setIcao(pick->icao);
+    }
+#else
+    ImGui::TextDisabled("WebView2 map requires Windows.");
+#endif
+
+    ImGui::End();
+}
+
 void drawEgc(App& app)
 {
     ImGui::Begin("EGC");
@@ -1325,6 +1380,7 @@ void drawDockHost(App& app)
         }
         ImGui::DockBuilderDockWindow("Spectrum", rtop);
         ImGui::DockBuilderDockWindow("Waterfall", rmid);
+        ImGui::DockBuilderDockWindow("Flight Map", rmid);
         ImGui::DockBuilderDockWindow("SUs", rbot);
         ImGui::DockBuilderDockWindow("Messages", rbot);
         ImGui::DockBuilderDockWindow("C-Channel", rbot);

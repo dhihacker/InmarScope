@@ -11,6 +11,7 @@
 #include "decode/decoder_manager.h"
 #include "output/message_feed.h"
 #include "update/version_check.h"
+#include "web/flight_map_webview.h"
 
 #include <chrono>
 #include <string>
@@ -106,6 +107,7 @@ struct App
     // Output
     MessageFeed feed;
     VersionCheck verCheck;
+    FlightMapWebView flightMapWv;
     uint64_t lastAcarsFed = 0, lastEgcFed = 0;
     bool   outFile = false;
     char   outFilePath[512] = "messages.jsonl";
@@ -189,4 +191,4 @@ constexpr const char* kFftLabels[] = {"1024", "2048", "4096", "8192", "16384", "
 constexpr int kNumFftSizes = (int)(sizeof(kFftSizes) / sizeof(kFftSizes[0]));
 
 // Dock layout version: bump when the built-in default layout changes.
-constexpr int kLayoutVersion = 3;
+constexpr int kLayoutVersion = 5;
