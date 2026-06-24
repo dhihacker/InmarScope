@@ -42,6 +42,8 @@ private:
     uint32_t dataBytes_ = 0;
     int sampleRate_ = 8000;
     int channels_ = 1;
+    bool hasAudio_ = false;
+    std::string path_;
 
     // OGG state
     WavWriterOggImpl* ogg_ = nullptr;

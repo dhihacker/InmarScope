@@ -149,6 +149,7 @@ private:
 bool WavWriter::open(const std::string& path, int sampleRate, int channels)
 {
     close();
+    path_ = path;
     sampleRate_ = sampleRate;
     channels_ = channels;
 
@@ -195,6 +196,7 @@ void WavWriter::write(const int16_t* data, int count)
 {
     if (!isOpen_ || count <= 0)
         return;
+    hasAudio_ = true;
 
     if (fmt_ == RecordFormat::OGG)
     {
@@ -219,6 +221,12 @@ void WavWriter::close()
     else
         closeWav();
     isOpen_ = false;
+    if (!hasAudio_ && !path_.empty())
+    {
+        std::remove(path_.c_str());
+        path_.clear();
+    }
+    hasAudio_ = false;
 }
 
 void WavWriter::closeWav()

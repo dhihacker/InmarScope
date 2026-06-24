@@ -36,7 +36,12 @@ static const Range kTable[] = {
     R(480000, 48FFFF, "FI"), R(490000, 49FFFF, "PT"), R(4A0000, 4AFFFF, "GR"),
     R(4B0000, 4BFFFF, "TR"), R(4C0000, 4CFFFF, "IE"), R(4D0000, 4DFFFF, "LU"),
     R(500000, 5FFFFF, "FR"), R(600000, 6FFFFF, "GB"), // UK large block
-    R(700000, 7FFFFF, "CN"), // China
+    // China — split into non-overlapping blocks to avoid binary-search collisions
+    // with the sub-ranges of TH, MY, SG, IN, PK, BD, LK below.
+    R(700000, 70FFFF, "CN"),
+    R(7A8000, 7BFFFF, "CN"),
+    R(780000, 79FFFF, "CN"),
+    R(7C0000, 7FFFFF, "AU"), // Australia
     // Asia / Pacific
     R(710000, 71FFFF, "TH"), R(720000, 72FFFF, "MY"), R(730000, 73FFFF, "SG"),
     R(740000, 74FFFF, "IN"), R(750000, 75FFFF, "PK"), R(760000, 76FFFF, "BD"),
@@ -44,8 +49,8 @@ static const Range kTable[] = {
     R(7E0000, 7E3FFF, "MN"), R(7E4000, 7E7FFF, "KP"),
     R(800000, 80FFFF, "JP"), R(810000, 81FFFF, "KR"), R(820000, 82FFFF, "PH"),
     R(83FFFF, 83FFFF, "HK"), // actually 838000-83
-    R(838000, 83FFFF, "HK"), R(840000, 84FFFF, "TW"),
-    R(860000, 86FFFF, "AU"), R(870000, 87FFFF, "NZ"), R(880000, 88FFFF, "ID"),
+    R(838000, 83FFFF, "HK"), R(840000, 87FFFF, "JP"),
+    R(880000, 88FFFF, "ID"), R(899000, 899FFF, "TW"),
     R(8A0000, 8AFFFF, "MY"),
     // Americas
     R(900000, 9FFFFF, "MX"), // Mexico
@@ -55,7 +60,8 @@ static const Range kTable[] = {
     R(C20000, C2FFFF, "CL"), R(C30000, C3FFFF, "CO"),
     R(C40000, C4FFFF, "VE"), R(C50000, C5FFFF, "PE"),
     R(C60000, C6FFFF, "EC"), R(C70000, C7FFFF, "BO"),
-    R(C80000, C8FFFF, "PY"), R(C90000, C9FFFF, "UY"),
+    R(C80000, C80FFF, "NZ"), R(C81000, C81FFF, "FJ"),
+    R(C82000, C8FFFF, "PY"), R(C90000, C9FFFF, "UY"),
     R(CA0000, CAFFFF, "GT"), R(CB0000, CBFFFF, "HN"),
     R(CC0000, CCFFFF, "PA"), R(D00000, D0FFFF, "KR"), // actually KR also here
     R(D10000, D1FFFF, "KR"), R(D20000, D2FFFF, "KW"),
