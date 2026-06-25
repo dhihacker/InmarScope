@@ -173,7 +173,7 @@ int AudioOutput::currentDevice() const { return impl_->selected; }
 
 void AudioOutput::push(const int16_t* pcm, int n)
 {
-    if (!impl_->started || n <= 0)
+    if (muted_.load() || !impl_->started || n <= 0)
         return;
     std::lock_guard<std::mutex> lk(impl_->mtx);
     for (int i = 0; i < n; ++i)

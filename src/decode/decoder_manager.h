@@ -81,6 +81,8 @@ public:
     std::vector<std::string> audioDevices() { return audio_.listDevices(); }
     void setAudioDevice(int index) { audio_.setDevice(index); }
     int  audioDevice() { return audio_.currentDevice(); }
+    void setVoiceMute(bool m) { audio_.setMuted(m); }
+    bool voiceMuted() const { return audio_.muted(); }
 
     // Voice call recording: every 8400 decoder writes its calls to WAV files
     // (one per call) in dir, independent of which channel is being monitored.

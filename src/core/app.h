@@ -112,6 +112,7 @@ struct App
     char iqRecPath[512] = "iq_record.wav";
 
     int  audioDevice = 0;
+    bool voiceMuted = false;
     std::vector<std::string> audioDevs;
 
     // Output

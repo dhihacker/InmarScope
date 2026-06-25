@@ -800,6 +800,12 @@ void drawDecoders(App& app)
     float lvl = app.decoders.audioLevel() * 5.0f;
     if (lvl > 1.0f) lvl = 1.0f;
     ImGui::ProgressBar(lvl, ImVec2(110, 0), "");
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Mute", &app.voiceMuted))
+    {
+        app.decoders.setVoiceMute(app.voiceMuted);
+        app.decodersB.setVoiceMute(app.voiceMuted);
+    }
 
     // Audio output device picker.
     if (app.audioDevs.empty())

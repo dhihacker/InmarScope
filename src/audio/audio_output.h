@@ -3,6 +3,7 @@
 // audio device callback. Backed by miniaudio (cross-platform).
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -33,6 +34,10 @@ public:
 
     float level() const; // recent output RMS (0..1) for a UI meter
 
+    void setMuted(bool m) { muted_.store(m); }
+    bool muted() const { return muted_.load(); }
+
 private:
     std::unique_ptr<AudioOutputImpl> impl_;
+    std::atomic<bool> muted_{false};
 };

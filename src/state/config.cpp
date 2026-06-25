@@ -38,7 +38,7 @@ void cfgWriteAll(App& app, ImGuiTextBuffer* buf)
 #define WD(f) buf->appendf(#f "=%.10g\n", (double)app.f)
 #define WS(f) buf->appendf(#f "=%s\n", app.f)
     WI(sourceMode); WI(deviceIndex); WI(sampleRateIdx); WI(newBaud); WI(fftSizeIdx);
-    WI(audioDevice);
+    WI(audioDevice); WI(voiceMuted);
     WD(centerFreqMHz);
     WI(autoGain); WF(gainDb); WI(biasTee); WF(ppm); WI(dcBlock);
     WI(autoScale); WI(bandBrowse); WF(avgAlpha); WF(dbMin); WF(dbMax);
@@ -85,7 +85,7 @@ void cfgReadLine(App& app, const char* line)
 #define RD(f) if (!std::strcmp(key, #f)) { app.f = std::atof(val); return; }
 #define RS(f) if (!std::strcmp(key, #f)) { std::strncpy(app.f, val, sizeof(app.f) - 1); app.f[sizeof(app.f) - 1] = 0; return; }
     RI(sourceMode); RI(deviceIndex); RI(sampleRateIdx); RI(newBaud); RI(fftSizeIdx);
-    RI(audioDevice);
+    RI(audioDevice); RB(voiceMuted);
     RD(centerFreqMHz);
     RB(autoGain); RF(gainDb); RB(biasTee); RF(ppm); RB(dcBlock);
     RB(autoScale); RB(bandBrowse); RF(avgAlpha); RF(dbMin); RF(dbMax);
