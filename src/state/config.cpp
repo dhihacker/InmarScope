@@ -54,6 +54,7 @@ void cfgWriteAll(App& app, ImGuiTextBuffer* buf)
     WI(recordFormat);
     WI(acPosOnly);
     WI(showEmptyMsgs);
+    WI(showBandPlan); WI(bandPlanIdx); WS(bandPlanDir);
     WI(outFile); WS(outFilePath); WI(outUdp); WS(outUdpHost); WI(outUdpPort);
     WI(outFormat); WS(outStation); WI(outSbs); WI(outSbsPort);
     WI(layoutVersion);
@@ -100,6 +101,7 @@ void cfgReadLine(App& app, const char* line)
     RI(recordFormat);
     RB(acPosOnly);
     RB(showEmptyMsgs);
+    RB(showBandPlan); RI(bandPlanIdx); RS(bandPlanDir);
     RB(outFile); RS(outFilePath); RB(outUdp); RS(outUdpHost); RI(outUdpPort);
     RI(outFormat); RS(outStation); RB(outSbs); RI(outSbsPort);
     RI(layoutVersion);

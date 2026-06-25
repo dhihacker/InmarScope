@@ -135,6 +135,9 @@ int main(int, char**)
         app.decodersB.setRecordFormat(rf);
     }
     app.verCheck.start("inmarscope", INMARSCOPE_VERSION);
+    scanBandPlans(app.bandPlanDir, app.bandPlanNames, app.bandPlanPaths);
+    if (app.bandPlanIdx >= 0 && app.bandPlanIdx < (int)app.bandPlanPaths.size())
+        app.bandPlanLoaded = loadBandPlan(app.bandPlanPaths[app.bandPlanIdx]);
 #if defined(_WIN32)
     app.flightMapWv.init(glfwGetWin32Window(window));
 #endif

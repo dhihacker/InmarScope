@@ -7,6 +7,7 @@
 #include "core/app.h"
 #include "core/main_funcs.h"
 #include "decode/icao_country.h"
+#include "decode/band_plan.h"
 #include "util/log.h"
 #include "version.h"
 #include "gui/waterfall.h"
@@ -344,6 +345,43 @@ void drawControls(App& app)
     if (app.sourceMode == 1)
         ImGui::TextDisabled("  (WAV: tuning is fixed to the file)");
 
+    // Band plan bar along bottom of spectrum
+    if (ImGui::Checkbox("Band Plan", &app.showBandPlan));
+    if (app.showBandPlan)
+    {
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Reload##bpr"))
+            scanBandPlans(app.bandPlanDir, app.bandPlanNames, app.bandPlanPaths);
+        ImGui::SameLine();
+        if (ImGui::SmallButton("Folder##bpf"))
+        {
+#if defined(_WIN32)
+            ShellExecuteA(nullptr, "open", app.bandPlanDir, nullptr, nullptr, SW_SHOW);
+#endif
+        }
+        if (app.bandPlanNames.empty())
+        {
+            ImGui::SameLine();
+            ImGui::TextDisabled("(no .json bandplans in bandplans/)");
+        }
+        else
+        {
+            if (app.bandPlanIdx >= (int)app.bandPlanNames.size())
+                app.bandPlanIdx = 0;
+            ImGui::SetNextItemWidth(-1);
+            if (ImGui::Combo("##bplan-sel", &app.bandPlanIdx,
+                             [](void* data, int idx) -> const char* {
+                                 auto& v = *(std::vector<std::string>*)data;
+                                 return idx >= 0 && idx < (int)v.size() ? v[idx].c_str() : "";
+                             },
+                             &app.bandPlanNames, (int)app.bandPlanNames.size()))
+            {
+                if (app.bandPlanIdx >= 0 && app.bandPlanIdx < (int)app.bandPlanPaths.size())
+                    app.bandPlanLoaded = loadBandPlan(app.bandPlanPaths[app.bandPlanIdx]);
+            }
+        }
+    }
+
     ImGui::Separator();
     const char* bauds[] = {"600", "1200", "8400", "10500", "Inmarsat-C/EGC"};
     ImGui::Combo("Decode baud", &app.newBaud, bauds, 5);
@@ -518,7 +556,9 @@ void drawSpectrum(App& app, SpectrumView& v, DecoderManager& mgr, const char* ti
             ImPlot::SetupAxisLimits(ImAxis_Y1, app.dbMin, app.dbMax, ImGuiCond_Always);
 
         if (v.curN > 0)
+        {
             ImPlot::PlotLine("PSD", v.freqMHz.data(), v.avg.data(), v.curN);
+        }
 
         auto decs = mgr.status();
         for (auto& d : decs)
@@ -622,6 +662,40 @@ void drawSpectrum(App& app, SpectrumView& v, DecoderManager& mgr, const char* ti
                 ImDrawList* dl = ImGui::GetWindowDrawList();
                 dl->AddLine(ImVec2(px, pp.y), ImVec2(px, pp.y + ps.y),
                             IM_COL32(255, 40, 40, 200), 1.5f);
+            }
+        }
+
+        // --- Band plan: solid coloured bar along the bottom (on top of everything) ---
+        if (app.showBandPlan && app.bandPlanLoaded.valid && v.curN > 0 &&
+            app.bandPlanIdx >= 0 && app.bandPlanIdx < (int)app.bandPlanNames.size())
+        {
+            const auto& bp = app.bandPlanLoaded;
+            const ImPlotRect vp = ImPlot::GetPlotLimits();
+            double viewLo = vp.X.Min, viewHi = vp.X.Max;
+            if (viewHi <= viewLo) { viewLo = v.freqMHz.front(); viewHi = v.freqMHz.back(); }
+            auto* dl = ImPlot::GetPlotDrawList();
+            constexpr float kBandH = 28.0f;
+            ImVec2 pp = ImPlot::GetPlotPos(), ps = ImPlot::GetPlotSize();
+            float bandTop = pp.y + ps.y - kBandH;
+            float bandBot = bandTop + kBandH;
+            float pxPerMHz = (float)(ps.x / (viewHi - viewLo));
+            for (auto& e : bp.entries)
+            {
+                if (e.hiMHz < viewLo || e.loMHz > viewHi) continue;
+                float loPx = pp.x + (float)((std::max(e.loMHz, viewLo) - viewLo) * pxPerMHz);
+                float hiPx = pp.x + (float)((std::min(e.hiMHz, viewHi) - viewLo) * pxPerMHz);
+                dl->AddRectFilled(ImVec2(loPx, bandTop), ImVec2(hiPx, bandBot), e.color);
+                float segW = hiPx - loPx;
+                if (segW > 50 && !e.label.empty())
+                {
+                    float lw = ImGui::CalcTextSize(e.label.c_str()).x;
+                    if (lw < segW - 4)
+                    {
+                        float cx = loPx + (segW - lw) * 0.5f;
+                        float cy = bandTop + (kBandH - ImGui::GetTextLineHeight()) * 0.5f;
+                        dl->AddText(ImVec2(cx, cy), IM_COL32(255, 255, 255, 230), e.label.c_str());
+                    }
+                }
             }
         }
 
@@ -803,16 +877,20 @@ void drawDecoders(App& app)
                 blBuf[0] = blBuf[1] = blBuf[2] = 0;
             }
         }
-        for (size_t i = 0; i < app.blacklistCountries.size();)
+        bool first = true;
+        for (size_t i = 0; i < app.blacklistCountries.size(); ++i)
         {
+            if (!first) ImGui::SameLine();
+            first = false;
             ImGui::Text("%s", app.blacklistCountries[i].c_str());
             ImGui::SameLine();
             char xbtn[12];
             std::snprintf(xbtn, sizeof(xbtn), "X##bl%zu", i);
             if (ImGui::SmallButton(xbtn))
+            {
                 app.blacklistCountries.erase(app.blacklistCountries.begin() + (ptrdiff_t)i);
-            else
-                ++i;
+                break;
+            }
         }
         ImGui::Spacing();
     }

@@ -9,6 +9,7 @@
 #include "sdr/wav_file_source.h"
 #include "sdr/sdrpp_server_source.h"
 #include "sdr/iq_recorder.h"
+#include "decode/band_plan.h"
 #include "decode/decoder_manager.h"
 #include "output/message_feed.h"
 #include "update/version_check.h"
@@ -169,6 +170,12 @@ struct App
     float  browseMinMovePct = 0.10f;
     bool   acPosOnly = false;
     bool   showEmptyMsgs = false;
+    bool   showBandPlan = false;
+    std::vector<std::string> bandPlanNames;  // display names
+    std::vector<std::string> bandPlanPaths;  // full file paths
+    int    bandPlanIdx = 0;
+    BandPlan bandPlanLoaded;
+    char   bandPlanDir[256] = "bandplans";
 
     // CallHunter
     bool  callHunterMode = false;
