@@ -135,6 +135,7 @@ add_executable(InmarScope
     src/sdr/hackrf_source.cpp
     src/sdr/wav_file_source.cpp
     src/sdr/sdrpp_server_source.cpp
+    src/sdr/iq_recorder.cpp
     src/gui/waterfall.cpp
     src/decode/decoder.cpp
     src/decode/decoder_manager.cpp

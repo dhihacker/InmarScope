@@ -442,6 +442,34 @@ void drawControls(App& app)
         ImGui::TextDisabled("SBS: VRS receiver -> Network, 127.0.0.1, this port, BaseStation.");
     }
 
+    ImGui::Separator();
+    if (ImGui::CollapsingHeader("IQ Recorder"))
+    {
+        ImGui::SetNextItemWidth(-70.0f);
+        ImGui::InputText("IQ file", app.iqRecPath, sizeof(app.iqRecPath));
+        bool iqRec = app.iqRecorder.isRecording();
+        if (iqRec)
+        {
+            if (ImGui::Button("Stop##iqrec"))
+                app.iqRecorder.stop();
+        }
+        else
+        {
+            if (ImGui::Button("Start##iqrec"))
+            {
+                if (app.active && app.active->running())
+                    app.iqRecorder.start(app.iqRecPath, app.active->sampleRate());
+            }
+        }
+        if (app.iqRecorder.isRecording())
+        {
+            double sec = app.iqRecorder.elapsed();
+            int m = (int)(sec / 60), s = (int)(sec) % 60;
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "REC %02d:%02d  —  %s",
+                               m, s, app.iqRecorder.path().c_str());
+        }
+    }
+
     if (running)
     {
         ImGui::Separator();

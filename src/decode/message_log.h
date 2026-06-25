@@ -137,6 +137,23 @@ public:
     void add(const EgcMessage& m)
     {
         std::lock_guard<std::mutex> lk(mtx_);
+        // Concatenate with an existing segment that shares the same message ID.
+        for (auto it = msgs_.rbegin(); it != msgs_.rend(); ++it)
+        {
+            if (it->channelId == m.channelId && it->messageId == m.messageId)
+            {
+                if (!m.text.empty())
+                {
+                    if (!it->text.empty())
+                        it->text += "\n";
+                    it->text += m.text;
+                }
+                it->frameNumber = m.frameNumber;
+                it->timeUtc = m.timeUtc;
+                ++count_;
+                return;
+            }
+        }
         msgs_.push_back(m);
         if (msgs_.size() > kMax)
             msgs_.erase(msgs_.begin(), msgs_.begin() + (msgs_.size() - kMax));

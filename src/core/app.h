@@ -8,6 +8,7 @@
 #include "sdr/hackrf_source.h"
 #include "sdr/wav_file_source.h"
 #include "sdr/sdrpp_server_source.h"
+#include "sdr/iq_recorder.h"
 #include "decode/decoder_manager.h"
 #include "output/message_feed.h"
 #include "update/version_check.h"
@@ -104,6 +105,10 @@ struct App
     // Country blacklist — voice calls from these 2-letter country codes
     // will not be monitored (they still record if recording is on).
     std::vector<std::string> blacklistCountries;
+
+    // IQ recorder
+    IqRecorder iqRecorder;
+    char iqRecPath[512] = "iq_record.wav";
 
     int  audioDevice = 0;
     std::vector<std::string> audioDevs;

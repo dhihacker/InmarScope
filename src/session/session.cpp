@@ -71,9 +71,12 @@ void startActive(App& app)
 
     IqRing* ring = &app.viewA.ring;
     DecoderManager* mgr = &app.decoders;
-    auto cb = [ring, mgr](const float* iq, int n) {
+    IqRecorder* iqr = &app.iqRecorder;
+    auto cb = [ring, mgr, iqr](const float* iq, int n) {
         ring->push(iq, (size_t)n);
         mgr->feed(iq, n);
+        if (iqr->isRecording())
+            iqr->write(iq, n);
     };
     std::string err;
     bool ok = false;
@@ -179,6 +182,16 @@ void startActive(App& app)
         app.following = false;
         app.followChannelId = -1;
         app.followHome.clear();
+    }
+
+    // If the IQ recorder was active, restart it with the new sample rate
+    // so the WAV header matches the actual capture rate.
+    bool wasIqRec = app.iqRecorder.isRecording();
+    if (wasIqRec)
+    {
+        app.iqRecorder.stop();
+        if (ok)
+            app.iqRecorder.start(app.iqRecPath, app.active->sampleRate());
     }
 
     if (ok)
