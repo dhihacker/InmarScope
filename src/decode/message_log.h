@@ -182,6 +182,51 @@ private:
     uint64_t count_ = 0;
 };
 
+// Active Inmarsat-C terminal (MES) tracked from terminal activity messages.
+struct MesEntry
+{
+    uint32_t mesId = 0;
+    std::string action;
+    std::string sat;
+    int les = -1;
+    int channel = -1;
+    double lastSeen = 0.0;
+    double freqMHz = 0.0;
+    uint64_t msgs = 0;
+};
+
+class MesLog
+{
+public:
+    void add(uint32_t mesId, const char* action, const char* sat, int les,
+             int channel, double freqMHz, double nowSec)
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        auto& e = entries_[mesId];
+        e.mesId = mesId;
+        e.action = action ? action : "";
+        e.sat = sat ? sat : "";
+        e.les = les;
+        e.channel = channel;
+        e.lastSeen = nowSec;
+        e.freqMHz = freqMHz;
+        ++e.msgs;
+    }
+    std::vector<MesEntry> snapshot()
+    {
+        std::lock_guard<std::mutex> lk(mtx_);
+        std::vector<MesEntry> out;
+        for (auto& kv : entries_) out.push_back(kv.second);
+        return out;
+    }
+    void clear() { std::lock_guard<std::mutex> lk(mtx_); entries_.clear(); }
+    size_t size() const { return entries_.size(); }
+
+private:
+    mutable std::mutex mtx_;
+    std::map<uint32_t, MesEntry> entries_;
+};
+
 // A channel discovered from the network's own system-table broadcasts.
 struct NetworkChannel
 {

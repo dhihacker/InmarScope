@@ -66,6 +66,7 @@ public:
     CassignLog& cassignLog() { return cassign_; }
     ChannelTable& channelTable() { return netTable_; }
     EgcLog& egcLog() { return egcLog_; }
+    MesLog& mesLog() { return mesLog_; }
     AircraftTable& aircraftTable() { return acTable_; }
     const AircraftTable& aircraftTable() const { return acTable_; }
 
@@ -136,6 +137,7 @@ private:
     CassignLog cassign_;
     ChannelTable netTable_;
     EgcLog egcLog_;
+    MesLog mesLog_;
     AircraftTable acTable_;
     AudioOutput audio_;
     int voiceMonitorId_ = -1;

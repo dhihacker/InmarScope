@@ -1284,6 +1284,10 @@ void drawEgc(App& app)
     ImGui::SameLine();
     if (ImGui::SmallButton("Clear"))
         app.decoders.egcLog().clear();
+    ImGui::SameLine();
+    static bool showEgc = true, showTerminal = true;
+    ImGui::Checkbox("EGC", &showEgc); ImGui::SameLine();
+    ImGui::Checkbox("STDC", &showTerminal);
     ImGui::TextDisabled("Inmarsat-C SafetyNET / FleetNET / system messages.");
     ImGui::Separator();
 
@@ -1302,6 +1306,9 @@ void drawEgc(App& app)
 
         for (auto it = msgs.rbegin(); it != msgs.rend(); ++it)
         {
+            bool isTerminal = (it->priority == "Terminal");
+            if (isTerminal && !showTerminal) continue;
+            if (!isTerminal && !showEgc) continue;
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(it->timeUtc.c_str());
@@ -1313,6 +1320,59 @@ void drawEgc(App& app)
             ImGui::TextWrapped("%s", it->service.c_str());
             ImGui::TableNextColumn();
             ImGui::TextWrapped("%s", it->text.c_str());
+        }
+        ImGui::EndTable();
+    }
+
+    ImGui::End();
+}
+
+void drawMes(App& app)
+{
+    ImGui::Begin("MES");
+
+    auto entries = app.decoders.mesLog().snapshot();
+    ImGui::Text("%zu terminal(s)", entries.size());
+    ImGui::SameLine();
+    if (ImGui::SmallButton("Clear"))
+        app.decoders.mesLog().clear();
+    ImGui::Separator();
+
+    std::sort(entries.begin(), entries.end(),
+              [](const MesEntry& a, const MesEntry& b) { return a.lastSeen > b.lastSeen; });
+
+    double now = (double)std::time(nullptr);
+    if (ImGui::BeginTable("##mes", 7,
+                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable))
+    {
+        ImGui::TableSetupColumn("MES ID", ImGuiTableColumnFlags_WidthFixed, 70);
+        ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, 80);
+        ImGui::TableSetupColumn("Sat", ImGuiTableColumnFlags_WidthFixed, 52);
+        ImGui::TableSetupColumn("LES", ImGuiTableColumnFlags_WidthFixed, 36);
+        ImGui::TableSetupColumn("Ch", ImGuiTableColumnFlags_WidthFixed, 32);
+        ImGui::TableSetupColumn("Age", ImGuiTableColumnFlags_WidthFixed, 48);
+        ImGui::TableSetupColumn("Msgs", ImGuiTableColumnFlags_WidthFixed, 48);
+        ImGui::TableSetupScrollFreeze(0, 1);
+        ImGui::TableHeadersRow();
+
+        for (auto& e : entries)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", e.mesId);
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(e.action.c_str());
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(e.sat.c_str());
+            ImGui::TableNextColumn();
+            if (e.les >= 0) ImGui::Text("%02d", e.les);
+            ImGui::TableNextColumn();
+            if (e.channel >= 0) ImGui::Text("%d", e.channel);
+            ImGui::TableNextColumn();
+            ImGui::Text("%ds", (int)(now - e.lastSeen));
+            ImGui::TableNextColumn();
+            ImGui::Text("%llu", (unsigned long long)e.msgs);
         }
         ImGui::EndTable();
     }
@@ -1477,6 +1537,7 @@ void drawDockHost(App& app)
         ImGui::DockBuilderDockWindow("C-Channel", rbot);
         ImGui::DockBuilderDockWindow("Network", rbot);
         ImGui::DockBuilderDockWindow("EGC", rbot);
+        ImGui::DockBuilderDockWindow("MES", rbot);
         ImGui::DockBuilderDockWindow("Aircraft", rbot);
         ImGui::DockBuilderDockWindow("Constellation", rcon);
         ImGui::DockBuilderFinish(dockId);

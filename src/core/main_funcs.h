@@ -35,6 +35,7 @@ void drawMessages(App&);
 void drawCChannel(App&);
 void drawNetwork(App&);
 void drawEgc(App&);
+void drawMes(App&);
 void drawAircraft(App&);
 void drawFlightMap(App&);
 void drawConstellation(App&);

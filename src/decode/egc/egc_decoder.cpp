@@ -413,6 +413,60 @@ std::string ia5Text(const uint8_t* p, int n)
 
 } // namespace
 
+// --- STD-C terminal activity helpers ---
+
+static const char* satName(int satId)
+{
+    switch (satId) {
+    case 0: return "AOR-W";  case 1: return "AOR-E";
+    case 2: return "POR";    case 3: return "IOR";
+    default: return "?";
+    }
+}
+
+static uint32_t readMesId(const uint8_t* d, int pos) { return ((uint32_t)d[pos] << 16) | ((uint32_t)d[pos+1] << 8) | d[pos+2]; }
+static int readSat (const uint8_t* d, int pos) { return (d[pos] >> 6) & 3; }
+static int readLes (const uint8_t* d, int pos) { return d[pos] & 0x3F; }
+static double downlinkMHz(const uint8_t* d, int pos) { return ((((uint16_t)d[pos] << 8) | d[pos+1]) - 8000) * 0.0025 + 1530.0; }
+static double uplinkMHz  (const uint8_t* d, int pos) { return ((((uint16_t)d[pos] << 8) | d[pos+1]) - 6000) * 0.0025 + 1626.5; }
+
+// Bitmask-to-text for Services8 (Signalling Channel byte at pos+1)
+static std::string services8Text(uint8_t svc)
+{
+    std::string s;
+    if (svc & 0x80) s += "DistressAlert ";
+    if (svc & 0x40) s += "SafetyNet ";
+    if (svc & 0x20) s += "InmC ";
+    if (svc & 0x10) s += "StoreFwd ";
+    if (svc & 0x08) s += "HalfDuplex ";
+    if (svc & 0x04) s += "FullDuplex ";
+    if (svc & 0x02) s += "ClosedNet ";
+    if (svc & 0x01) s += "FleetNet ";
+    if (s.empty()) return "None";
+    s.pop_back();
+    return s;
+}
+
+static std::string frameTimeStr(int frameNo)
+{
+    double hr = frameNo * 8.64 / 3600.0;
+    int h = (int)hr, mn = (int)((hr - h) * 60), sc = (int)((((hr - h) * 60) - mn) * 60);
+    char buf[16];
+    std::snprintf(buf, sizeof(buf), "%02d:%02d:%02d", h, mn, sc);
+    return buf;
+}
+
+// TDM slot decoding (Signalling Channel):
+// 7 bytes → 28 slots of 2 bits each. Returns a compact hex string.
+static std::string tdmSlots(const uint8_t* d)
+{
+    char buf[64]; int p = 0;
+    for (int i = 0; i < 7 && p < 60; ++i) {
+        p += std::snprintf(buf + p, sizeof(buf) - p, "%02X", d[i]);
+    }
+    return buf;
+}
+
 struct EgcDecoder::Impl
 {
     Impl(double sRate) : demod(sRate), fs(sRate) {}
@@ -420,6 +474,7 @@ struct EgcDecoder::Impl
     double freqMHz;
     double fs;
     EgcLog* log;
+    MesLog* mesLog = nullptr;
     double mixPhase = 0.0;
     RDemodulator demod;
     UWFinder uw{25};
@@ -437,6 +492,27 @@ struct EgcDecoder::Impl
     std::vector<uint8_t> mfaData;
     int mfaExpected = 0, mfaFilled = 0;
     bool mfaActive = false;
+
+    void emitTerminal(const char* tag, const char* desc,
+                      uint32_t mesId = 0, const char* sat = "", int les = -1, int channel = -1)
+    {
+        EgcMessage m;
+        m.channelId = channelId;
+        m.freqMHz = freqMHz;
+        m.frameNumber = curFrameNo;
+        m.timeUtc = curTime;
+        m.service = tag;
+        m.priority = "Terminal";
+        m.messageId = 0;
+        m.presentation = 0;
+        m.text = desc;
+        ++messageCount;
+        logWrite("[STDC] ch%d fr=%d t=%s %s: %s", channelId, curFrameNo, curTime.c_str(), tag, desc);
+        if (log) log->add(m);
+        if (mesLog && mesId)
+            mesLog->add(mesId, tag, sat, les, channel, freqMHz,
+                        (double)std::time(nullptr));
+    }
 
     void emitEgc(const uint8_t* f, int pos, int plen)
     {
@@ -523,17 +599,137 @@ struct EgcDecoder::Impl
                 }
                 mfaActive = false;
             }
+            // --- STD-C terminal activity packets ---
+            else if (d == 0x92 && ok)
+            {
+                // Login ACK
+                uint32_t lesHex = ((uint32_t)f[pos+2] << 16) | ((uint32_t)f[pos+3] << 8) | f[pos+4];
+                double dl = downlinkMHz(f, pos + 5);
+                char buf[128];
+                std::snprintf(buf, sizeof(buf), "LES %06X on %s ch down %.4f MHz",
+                              lesHex, satName(0), dl);
+                emitTerminal("Login ACK", buf);
+            }
+            else if (d == 0x81 && ok)
+            {
+                // Announcement — terminal announcing on the network
+                uint32_t mes = readMesId(f, pos + 2);
+                int sat = readSat(f, pos + 5), les = readLes(f, pos + 5);
+                int lch = f[pos + 9];
+                char buf[128];
+                std::snprintf(buf, sizeof(buf), "MES %u on %s LES %02d ch %d",
+                              mes, satName(sat), les, lch);
+                emitTerminal("Announce", buf, mes, satName(sat), les, lch);
+            }
+            else if (d == 0x83 && ok)
+            {
+                // Channel Assignment
+                uint32_t mes = readMesId(f, pos + 2);
+                int sat = readSat(f, pos + 5), les = readLes(f, pos + 5);
+                int lch = f[pos + 7];
+                double dl = downlinkMHz(f, pos + 10);
+                double ul = uplinkMHz(f, pos + 12);
+                char buf[128];
+                std::snprintf(buf, sizeof(buf), "MES %u on %s LES %02d ch %d down %.3f up %.3f MHz",
+                              mes, satName(sat), les, lch, dl, ul);
+                emitTerminal("Assign", buf, mes, satName(sat), les, lch);
+            }
+            else if (d == 0x27 && ok)
+            {
+                // Channel Clear
+                uint32_t mes = readMesId(f, pos + 1);
+                int sat = readSat(f, pos + 4), les = readLes(f, pos + 4);
+                int lch = f[pos + 5];
+                char buf[128];
+                std::snprintf(buf, sizeof(buf), "MES %u on %s LES %02d ch %d",
+                              mes, satName(sat), les, lch);
+                emitTerminal("Clear", buf, mes, satName(sat), les, lch);
+            }
+            else if (d == 0xA3 && ok)
+            {
+                // Individual Poll
+                uint32_t mes = readMesId(f, pos + 2);
+                int sat = readSat(f, pos + 5), les = readLes(f, pos + 5);
+                char buf[128];
+                std::snprintf(buf, sizeof(buf), "MES %u on %s LES %02d",
+                              mes, satName(sat), les);
+                emitTerminal("Poll", buf, mes, satName(sat), les, -1);
+            }
+            else if (d == 0xA8 && ok)
+            {
+                // Confirmation
+                uint32_t mes = readMesId(f, pos + 2);
+                int sat = readSat(f, pos + 5), les = readLes(f, pos + 5);
+                char buf[128];
+                std::snprintf(buf, sizeof(buf), "MES %u on %s LES %02d",
+                              mes, satName(sat), les);
+                emitTerminal("Confirm", buf, mes, satName(sat), les, -1);
+            }
+            else if (d == 0xAA && ok)
+            {
+                // Message (non-EGC)
+                int sat = readSat(f, pos + 2), les = readLes(f, pos + 2);
+                int lch = f[pos + 3], pktNo = f[pos + 4];
+                char buf[128];
+                std::snprintf(buf, sizeof(buf), "on %s LES %02d ch %d pkt %d",
+                              satName(sat), les, lch, pktNo);
+                emitTerminal("Message", buf);
+            }
+            else if (d == 0x08 && ok)
+            {
+                // ACK Request
+                int sat = readSat(f, pos + 1), les = readLes(f, pos + 1);
+                int lch = f[pos + 2];
+                double ul = uplinkMHz(f, pos + 3);
+                char buf[128];
+                std::snprintf(buf, sizeof(buf), "on %s LES %02d ch %d up %.3f MHz",
+                              satName(sat), les, lch, ul);
+                emitTerminal("ACK Req", buf);
+            }
+            else if (d == 0x2A && ok)
+            {
+                // Message ACK
+                uint32_t mes = readMesId(f, pos + 1);
+                int sat = readSat(f, pos + 4), les = readLes(f, pos + 4);
+                int lch = f[pos + 5];
+                char buf[128];
+                std::snprintf(buf, sizeof(buf), "MES %u on %s LES %02d ch %d",
+                              mes, satName(sat), les, lch);
+                emitTerminal("Msg ACK", buf);
+            }
+            else if (d == 0x6C && ok)
+            {
+                // Signalling Channel — network services update
+                uint8_t svc = f[pos + 1];
+                double ul = uplinkMHz(f, pos + 2);
+                std::string svcStr = services8Text(svc);
+                std::string slots = tdmSlots(&f[pos + 4]);
+                char buf[256];
+                std::snprintf(buf, sizeof(buf), "up %.3f MHz svc=[%s] slots=[%s]",
+                              ul, svcStr.c_str(), slots.c_str());
+                emitTerminal("Sig Ch", buf);
+            }
+            else if (d == 0xAB && ok)
+            {
+                // LES List
+                int cnt = f[pos + 3];
+                char buf[256];
+                std::snprintf(buf, sizeof(buf), "%d LES entries", cnt);
+                emitTerminal("LES List", buf);
+            }
             pos += plen;
         }
     }
 };
 
-EgcDecoder::EgcDecoder(int channelId, double freqMHz, double sampleRate, EgcLog* log)
+EgcDecoder::EgcDecoder(int channelId, double freqMHz, double sampleRate, EgcLog* log,
+                       MesLog* mesLog)
     : p_(new Impl(sampleRate))
 {
     p_->channelId = channelId;
     p_->freqMHz = freqMHz;
     p_->log = log;
+    p_->mesLog = mesLog;
     p_->mixPhase = 0.0;
 }
 
