@@ -124,4 +124,6 @@ private:
     std::string recordDir_ = "recordings";
     std::unique_ptr<WavWriter> rec_;
     std::chrono::steady_clock::time_point lastVoiceTime_;
+    std::chrono::steady_clock::time_point firstPcmTime_;
+    std::vector<int16_t> pcmBuf_;       // buffer early PCM before ICAO known
 };

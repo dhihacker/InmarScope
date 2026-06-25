@@ -14,8 +14,6 @@
 #include <ctime>
 #include <filesystem>
 
-// A voice call is considered finished when no AMBE frames arrive for this long.
-static constexpr double kCallGapSec = 1.5;
 
 // JAERO DSP config knob referenced by jaero_demod.cpp (0 = use the demod's
 // built-in default locking bandwidth).
@@ -602,10 +600,10 @@ void Decoder::maintainRecording()
 {
     if (!recActive_.load())
         return;
-    bool idle = std::chrono::duration<double>(
-                    std::chrono::steady_clock::now() - lastVoiceTime_)
-                    .count() > kCallGapSec;
-    if (!record_.load() || idle)
+    // Call boundaries are determined by decoder lifetime (voice-follow
+    // creates/removes decoders). The destructor closes the file. Only
+    // close here if recording was explicitly stopped via the checkbox.
+    if (!record_.load())
     {
         if (rec_)
             rec_->close();
@@ -618,7 +616,24 @@ void Decoder::recordPcm(const int16_t* pcm, int n)
     lastVoiceTime_ = std::chrono::steady_clock::now();
     if (!recActive_.load())
     {
-        // Start a new call file: <dir>/<UTC time>_<freq>MHz_ch<id>.wav
+        // Buffer early PCM until we learn the ICAO (from Call Progress /
+        // C-assign) or 2 s have elapsed, so the filename carries the tail tag.
+        if (pcmBuf_.size() < 160 * 100) // max 2 s buffer
+        {
+            if (!voiceAesId_)
+            {
+                auto now = std::chrono::steady_clock::now();
+                if (pcmBuf_.empty())
+                    firstPcmTime_ = now;
+                double elapsed = std::chrono::duration<double>(now - firstPcmTime_).count();
+                if (elapsed < 2.0)
+                {
+                    pcmBuf_.insert(pcmBuf_.end(), pcm, pcm + n);
+                    return;
+                }
+            }
+        }
+        // Open the file now (ICAO known, or timeout expired).
         std::error_code ec;
         std::filesystem::create_directories(recordDir_, ec);
         std::time_t t = std::time(nullptr);
@@ -632,10 +647,6 @@ void Decoder::recordPcm(const int16_t* pcm, int n)
         std::strftime(ts, sizeof(ts), "%Y%m%d_%H%M%S", &tm);
         char name[256];
         const char* ext = (recordFmt_ == RecordFormat::OGG) ? ".ogg" : ".wav";
-        // Tag the filename with the aircraft identity: ICAO hex if the table
-        // already knows it (from a prior ADS‑C airframe‑ID report), otherwise
-        // fall back to the 24‑bit AES ID. No tag when the AES isn't known
-        // (CallHunter / manual Ctrl‑click).
         std::string icaoTag;
         if (acTable_ && voiceAesId_)
         {
@@ -656,8 +667,17 @@ void Decoder::recordPcm(const int16_t* pcm, int n)
             rec_ = std::make_unique<WavWriter>();
         rec_->setFormat(recordFmt_);
         if (!rec_->open(name, 8000, 1))
-            return; // couldn't open: stay inactive, try again next frame
+        {
+            pcmBuf_.clear();
+            return;
+        }
         recActive_.store(true);
+        // Flush buffered PCM (if any) then clear the buffer.
+        if (!pcmBuf_.empty())
+        {
+            rec_->write(pcmBuf_.data(), (int)pcmBuf_.size());
+            pcmBuf_.clear();
+        }
     }
     if (rec_)
         rec_->write(pcm, n);
