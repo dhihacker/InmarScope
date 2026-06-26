@@ -600,6 +600,11 @@ int jaero_pmsk_get_constellation(jaero_pmsk_demod_t *d, double *iq_out, int max_
     return d->demod->get_constellation_snapshot(iq_out, max_pairs);
 }
 
+void jaero_pmsk_set_cpu_reduce(jaero_pmsk_demod_t *d, int on)
+{
+    if (d && d->demod) d->demod->setCPUReduce(on != 0);
+}
+
 /* ============================================================
  * Continuous OQPSK demodulator (Aero H/H+/L, 10500 baud forward link)
  * Uses OqpskDemodulator (not BurstOqpskDemodulator).
@@ -887,6 +892,11 @@ int jaero_oqpsk_cont_get_constellation(jaero_oqpsk_cont_demod_t *d, double *iq_o
 {
     if (!d || !d->demod) return 0;
     return d->demod->get_constellation_snapshot(iq_out, max_pairs);
+}
+
+void jaero_oqpsk_cont_set_cpu_reduce(jaero_oqpsk_cont_demod_t *d, int on)
+{
+    if (d && d->demod) d->demod->setCPUReduce(on != 0);
 }
 
 } /* extern "C" */
