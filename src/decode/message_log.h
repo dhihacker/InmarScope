@@ -240,7 +240,8 @@ struct LesMessage
     std::string lesLabel;  // e.g. "AOR-E LES 02 (Stratos Global...)"
     int channel = -1;
     int pktNo = 0;
-    std::string text;      // decoded IA5 message text
+    std::string text;
+    bool isEncrypted = false;
 };
 
 class LesLog

@@ -1472,12 +1472,15 @@ void drawLes(App& app)
     ImGui::SameLine();
     if (ImGui::SmallButton("Clear"))
         app.decoders.lesLog().clear();
+    ImGui::SameLine();
+    static bool hideEncrypted = false;
+    ImGui::Checkbox("Hide encrypted", &hideEncrypted);
     ImGui::TextDisabled("LES private ship/shore messages (0xAA non-EGC).");
     ImGui::Separator();
 
     auto msgs = app.decoders.lesLog().snapshot();
     if (ImGui::BeginTable("##les", 6,
-                          ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                          ImGuiTableFlags_Borders |
                           ImGuiTableFlags_ScrollY | ImGuiTableFlags_Resizable))
     {
         ImGui::TableSetupColumn("Time", ImGuiTableColumnFlags_WidthFixed, 64);
@@ -1491,7 +1494,12 @@ void drawLes(App& app)
 
         for (auto it = msgs.rbegin(); it != msgs.rend(); ++it)
         {
+            if (hideEncrypted && it->isEncrypted) continue;
             ImGui::TableNextRow();
+            if (it->isEncrypted)
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(80, 20, 20, 255));
+            else
+                ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg0, IM_COL32(20, 80, 20, 255));
             ImGui::TableNextColumn();
             ImGui::TextUnformatted(it->timeUtc.c_str());
             ImGui::TableNextColumn();

@@ -757,9 +757,6 @@ struct EgcDecoder::Impl
                     ++printable;
             }
             bool hasReadable = (payLen > 16 && printable > payLen * 2 / 3);
-            // Only log each chain once: skip if we already emitted this chain
-            // earlier in the same frame (mrf.first > 10000 means already emitted)
-            static int lastLoggedKey = -1;
             if (lastLesKey == mrfKey) { /* already emitted this frame */ }
             else
             {
@@ -788,6 +785,7 @@ struct EgcDecoder::Impl
                 else if ((int)mrf.second.size() > 8)
                     tp += std::snprintf(txt + tp, sizeof(txt) - tp, "--- assembled (%s) ---\n%s",
                                         useIta2 ? "ITA2" : "IA5", mrf.second.c_str());
+                lm.isEncrypted = !hasReadable;
                 lm.text = txt;
                 lesLog->add(lm);
                 lastLesKey = mrfKey;
