@@ -136,6 +136,7 @@ struct App
     int  audioDevice = 0;
     bool voiceMuted = false;
     bool cpuReduce = false;
+    bool showAbout = false;
     std::vector<std::string> audioDevs;
 
     // Output

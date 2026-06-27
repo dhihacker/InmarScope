@@ -105,6 +105,11 @@ void drawControls(App& app)
             ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.4f, 0.9f, 0.4f, 1.0f), "  (up to date)");
         }
+        else if (st == VersionCheck::Unreleased)
+        {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.7f, 0.5f, 1.0f, 1.0f), "  (unreleased)");
+        }
         else if (st == VersionCheck::Checking)
         {
             ImGui::SameLine();
@@ -1895,6 +1900,38 @@ void drawConstellation(App& app)
 }
 
 // ---------------------------------------------------------------------------
+// About dialog
+// ---------------------------------------------------------------------------
+
+void drawAbout(App& app)
+{
+    if (!app.showAbout)
+        return;
+
+    ImGui::SetNextWindowSize(ImVec2(360, 240), ImGuiCond_Appearing);
+    ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    if (ImGui::Begin("About InmarScope", &app.showAbout,
+                     ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoDocking |
+                     ImGuiWindowFlags_NoCollapse))
+    {
+        ImGui::TextWrapped("InmarScope v" INMARSCOPE_VERSION);
+        ImGui::Separator();
+        ImGui::TextWrapped("InmarScope was created by Sarah Rose.");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Built with components from:");
+        ImGui::TextDisabled("  JAERO (Jontio)");
+        ImGui::TextDisabled("  inmarsat-sniffer");
+        ImGui::TextDisabled("  libaeroambe");
+        ImGui::TextDisabled("  mbelib (dsd)");
+        ImGui::TextDisabled("  scytaleC (Thierry Leconte)");
+        ImGui::TextDisabled("  DeDECTive (Sarah Rose)");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Thanks to Arclamp for providing a server for accessing the satellite during development.");
+    }
+    ImGui::End();
+}
+
+// ---------------------------------------------------------------------------
 // Persistent settings: serialized into inmarscope.ini alongside the ImGui dock
 // layout via a custom settings handler.
 // ---------------------------------------------------------------------------
@@ -1979,6 +2016,12 @@ void drawDockHost(App& app)
         {
             if (ImGui::MenuItem("Reset Layout"))
                 forceLayout = true;
+            ImGui::EndMenu();
+        }
+        if (ImGui::BeginMenu("Help"))
+        {
+            if (ImGui::MenuItem("About"))
+                app.showAbout = true;
             ImGui::EndMenu();
         }
         ImGui::EndMenuBar();

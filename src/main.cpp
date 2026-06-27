@@ -208,6 +208,7 @@ int main(int, char**)
         drawAircraft(app);
         drawFlightMap(app);
         drawConstellation(app);
+        drawAbout(app);
 
         int display_w, display_h;
         glfwGetFramebufferSize(window, &display_w, &display_h);
