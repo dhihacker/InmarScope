@@ -95,7 +95,7 @@ void drawControls(App& app)
             {
 #if defined(_WIN32)
                 std::string url = app.verCheck.productUrl();
-                if (url.empty()) url = "https://sarahsforge.dev/products/inmarscope";
+                if (url.empty()) url = "https://sarahsforge.dev/login";
                 ShellExecuteA(nullptr, "open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 #endif
             }
@@ -2260,7 +2260,7 @@ void drawAbout(App& app)
     if (!app.showAbout)
         return;
 
-    ImGui::SetNextWindowSize(ImVec2(360, 240), ImGuiCond_Appearing);
+    ImGui::SetNextWindowSize(ImVec2(420, 340), ImGuiCond_Appearing);
     ImGui::SetNextWindowPos(ImGui::GetMainViewport()->GetCenter(), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
     if (ImGui::Begin("About InmarScope", &app.showAbout,
                      ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoDocking |
@@ -2279,6 +2279,8 @@ void drawAbout(App& app)
         ImGui::TextDisabled("  DeDECTive (Sarah Rose)");
         ImGui::Spacing();
         ImGui::TextWrapped("Thanks to Arclamp VK4SUS for providing a server for accessing the satellite during development.");
+        ImGui::Spacing();
+        ImGui::TextWrapped("Thanks to Mike AA8IA for donating an Airspy R2 and Airspy Mini for development.");
     }
     ImGui::End();
 }
