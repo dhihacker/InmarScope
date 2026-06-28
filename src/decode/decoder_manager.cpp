@@ -12,7 +12,7 @@
 // Shared front-end IF rate and passband. ~250 kHz IF -> ±150 kHz usable
 // coverage per sub-band; decoders within ±135 kHz of a sub-band centre share it.
 static constexpr double kSubRateTarget = 250000.0;
-static constexpr double kSubBW = 300000.0;
+static constexpr double kSubBW = 200000.0;
 
 // Heavier decoders consume more CPU per block.  EGC is very light, OQPSK
 // moderate, MSK the heaviest (coarse frequency estimator + matched filters).
@@ -70,11 +70,12 @@ void DecoderManager::feed(const float* iq, int nComplex)
 {
     if (!run_.load())
         return;
+    // One shared block — all workers reference the same memory, zero per-worker copies.
+    auto shared = std::make_shared<const std::vector<float>>(iq, iq + (size_t)nComplex * 2);
     for (auto& w : workers_)
     {
         if (w->count.load() == 0)
             continue;
-        std::vector<float> block(iq, iq + (size_t)nComplex * 2);
         {
             std::lock_guard<std::mutex> lk(w->qMtx);
             if (w->queue.size() >= kMaxQueue)
@@ -82,7 +83,7 @@ void DecoderManager::feed(const float* iq, int nComplex)
                 w->queue.pop_front();
                 drops_.fetch_add(1);
             }
-            w->queue.push_back(std::move(block));
+            w->queue.push_back(shared);
         }
         w->cv.notify_one();
     }
@@ -105,9 +106,9 @@ int DecoderManager::addDecoder(double freqHz, int baud, uint32_t aesId)
         std::lock_guard<std::mutex> lk(w->dMtx);
         for (auto& sb : w->subbands)
         {
-            if (std::fabs(freqHz - sb->centerHz) < 0.45 * sb->subRate)
+            if (std::fabs(freqHz - sb->centerHz) < 0.40 * sb->subRate)
             {
-                Decoder* dec = sb->decoders.emplace_back(std::make_unique<Decoder>(
+                Decoder* dec = sb->decoders.emplace_back(std::make_shared<Decoder>(
                     sb->subRate, sb->centerHz, freqHz, baud, id, &log_, &suLog_, &audio_, &cassign_, &netTable_, &egcLog_, &acTable_, &mesLog_, &lesLog_, &lesFreqTable_)).get();
                 w->count.fetch_add(1);
                 w->weight.fetch_add(decoderWeight(baud));
@@ -130,14 +131,18 @@ int DecoderManager::addDecoder(double freqHz, int baud, uint32_t aesId)
     }
 
     // 2) No covering sub-band -> create a new one on the lightest worker.
+    // Effective weight includes sub-band count (front-end DDC ~= 5 MSK decoders).
     Worker* best = workers_[0].get();
+    int bestEff = best->weight.load() + (int)best->subbands.size() * 5;
     for (auto& w : workers_)
-        if (w->weight.load() < best->weight.load())
-            best = w.get();
+    {
+        int eff = w->weight.load() + (int)w->subbands.size() * 5;
+        if (eff < bestEff) { best = w.get(); bestEff = eff; }
+    }
 
     std::lock_guard<std::mutex> lk(best->dMtx);
-    auto sb = std::make_unique<SubBand>(Fs_, centerHz_, freqHz, kSubRateTarget, kSubBW);
-    Decoder* dec = sb->decoders.emplace_back(std::make_unique<Decoder>(
+    auto sb = std::make_shared<SubBand>(Fs_, centerHz_, freqHz, kSubRateTarget, kSubBW);
+    Decoder* dec = sb->decoders.emplace_back(std::make_shared<Decoder>(
         sb->subRate, sb->centerHz, freqHz, baud, id, &log_, &suLog_, &audio_, &cassign_, &netTable_, &egcLog_, &acTable_, &mesLog_, &lesLog_, &lesFreqTable_)).get();
     if (baud == 8400 && voiceMonitorId_ < 0)
     {
@@ -528,29 +533,42 @@ void DecoderManager::workerLoop(Worker* w)
 {
     while (run_.load())
     {
-        std::vector<float> block;
+        std::shared_ptr<const std::vector<float>> blockPtr;
         {
             std::unique_lock<std::mutex> lk(w->qMtx);
             w->cv.wait(lk, [&]() { return !run_.load() || !w->queue.empty(); });
             if (!run_.load())
                 break;
-            block = std::move(w->queue.front());
+            blockPtr = w->queue.front();
             w->queue.pop_front();
         }
+        const std::vector<float>& block = *blockPtr;
         int nWide = (int)(block.size() / 2);
 
-        std::lock_guard<std::mutex> lk(w->dMtx);
-        for (auto& sb : w->subbands)
+        // Snapshot sub-band + decoder shared_ptrs under dMtx, then release
+        // before processing so the UI thread never blocks on status().
+        struct Snap { std::shared_ptr<SubBand> sb; std::vector<std::shared_ptr<Decoder>> decs; };
+        std::vector<Snap> snap;
         {
-            // Shared front-end: decimate the wideband to the sub-band IF once.
-            sb->subIQ.clear();
-            sb->frontEnd.process(block.data(), nWide, sb->subIQ);
-            int nSub = (int)(sb->subIQ.size() / 2);
-            if (nSub <= 0)
-                continue;
-            // Cheap per-channel DDCs run from the IF stream.
-            for (auto& d : sb->decoders)
-                d->process(sb->subIQ.data(), nSub);
+            std::lock_guard<std::mutex> lk(w->dMtx);
+            snap.reserve(w->subbands.size());
+            for (auto& sb : w->subbands)
+            {
+                Snap s;
+                s.sb = sb;
+                s.decs = sb->decoders; // shared_ptr copies keep decoders alive
+                snap.push_back(std::move(s));
+            }
+        }
+        // Process outside dMtx — UI thread can now read status instantly.
+        for (auto& s : snap)
+        {
+            s.sb->subIQ.clear();
+            s.sb->frontEnd.process(block.data(), nWide, s.sb->subIQ);
+            int nSub = (int)(s.sb->subIQ.size() / 2);
+            if (nSub <= 0) continue;
+            for (auto& d : s.decs)
+                d->process(s.sb->subIQ.data(), nSub);
         }
     }
 }

@@ -114,7 +114,7 @@ private:
         double subRate = 0.0;
         Ddc frontEnd;                 // Fs -> subRate (shared by all decoders)
         std::vector<double> subIQ;    // scratch (worker thread only)
-        std::vector<std::unique_ptr<Decoder>> decoders;
+        std::vector<std::shared_ptr<Decoder>> decoders;
     };
 
     struct Worker
@@ -122,10 +122,10 @@ private:
         std::thread thread;
         std::mutex qMtx;
         std::condition_variable cv;
-        std::deque<std::vector<float>> queue;
+        std::deque<std::shared_ptr<const std::vector<float>>> queue;
 
         std::mutex dMtx; // guards subbands
-        std::vector<std::unique_ptr<SubBand>> subbands;
+        std::vector<std::shared_ptr<SubBand>> subbands;
         std::atomic<int> count{0};   // total decoders on this worker
         std::atomic<int> weight{0};  // weighted load (MSK=3, OQPSK=2, EGC=1)
     };
@@ -142,7 +142,7 @@ private:
     int nextId_ = 1;
 
     std::atomic<uint64_t> drops_{0};
-    static constexpr size_t kMaxQueue = 64;
+    static constexpr size_t kMaxQueue = 96;
     MessageLog log_;
     MessageLog suLog_;
     CassignLog cassign_;
