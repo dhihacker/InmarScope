@@ -19,6 +19,7 @@
 #include <cstring>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 #if defined(_WIN32)
@@ -385,7 +386,9 @@ void updateCallHunter(App& app)
 
     // Find peaks in the *difference* between current PSD and baseline.
     float thresh = app.callHunterThreshDB;
-    float valleyThresh = thresh + 1.0f; // peaks must dip near baseline to split
+    // Valley for splitting must be AT or below the detection threshold —
+    // a tiny 1 dB dip within a signal is NOT a valley between two calls.
+    float valleyThresh = thresh;
     // Minimum peak width: real 8400 voice is ~10 kHz wide, noise spikes are
     // only a few bins.  Require at least ~3 kHz to reject narrow false positives.
     double binResHz = (bandMax - bandMin) * 1e6 / v.curN; // Hz per FFT bin
@@ -405,9 +408,11 @@ void updateCallHunter(App& app)
                 int wBins = end - start;
                 if (wBins < minWidthBins)
                     start = -1; // too narrow — noise spike
-                else if (wBins > minWidthBins * 2)
+                else if (wBins > minWidthBins * 3)
                 {
-                    // Wide block — scan for a valley to split adjacent calls.
+                    // Very wide block (>~9 kHz) — scan for a valley to split
+                    // adjacent calls. A single call is ~10 kHz wide; two
+                    // overlapping ones can reach 15-20 kHz.
                     int bestSplit = -1;
                     float bestValley = 1e9f;
                     int margin = minWidthBins / 2;
@@ -416,7 +421,9 @@ void updateCallHunter(App& app)
                         float dk = v.avg[k] - app.callHunterBaseline[k];
                         if (dk < bestValley) { bestValley = dk; bestSplit = k; }
                     }
-                    if (bestSplit >= 0 && bestValley < valleyThresh)
+                    if (bestSplit >= 0 && bestValley < valleyThresh &&
+                        (bestSplit - start) >= minWidthBins &&
+                        (end - bestSplit) >= minWidthBins)
                     {
                         // Split into two peaks at the valley.
                         double sumF1 = 0, sumW1 = 0; float bestV1 = -999;
@@ -481,22 +488,19 @@ void updateCallHunter(App& app)
         }
     }
 
-    // Match peaks to existing candidates.
-    // Unspawned candidates: ±3 kHz.  Spawned decoders: ±750 Hz only —
-    // a peak further from a spawned decoder is a *different* call and must
-    // NOT be merged into the spawned candidate (or it steals the confirm).
-    const double kSearchWide = 0.003;
-    const double kSearchSpawn = 0.00075;
+    // Match peaks to existing candidates (±3 kHz).
+    // A single pass for both spawned and unspawned candidates works fine —
+    // frequency wobble of 1-2 kHz is normal for an OQPSK carrier, and
+    // distinct adjacent calls are at least 5.6 kHz apart (C-channel spacing).
+    const double kSearchKHz = 0.003;
     for (auto& c : app.callHunterCands)
         c.matched = false;
     for (auto& p : peaks)
     {
         bool found = false;
-        // Pass 1: match to unspawned candidates (±3 kHz).
         for (auto& c : app.callHunterCands)
         {
-            if (c.channelId >= 0) continue;
-            if (std::abs(p.f - c.freqMHz) < kSearchWide)
+            if (std::abs(p.f - c.freqMHz) < kSearchKHz)
             {
                 c.freqMHz = 0.7 * c.freqMHz + 0.3 * p.f;
                 c.confirmCount++;
@@ -505,24 +509,6 @@ void updateCallHunter(App& app)
                 c.peakDB = p.vv;
                 found = true;
                 break;
-            }
-        }
-        // Pass 2: if not matched, try spawned candidates (±750 Hz only).
-        if (!found)
-        {
-            for (auto& c : app.callHunterCands)
-            {
-                if (c.channelId < 0) continue;
-                if (std::abs(p.f - c.freqMHz) < kSearchSpawn)
-                {
-                    c.freqMHz = 0.7 * c.freqMHz + 0.3 * p.f;
-                    c.confirmCount++;
-                    c.lostCount = 0;
-                    c.matched = true;
-                    c.peakDB = p.vv;
-                    found = true;
-                    break;
-                }
             }
         }
         if (!found)
@@ -536,31 +522,46 @@ void updateCallHunter(App& app)
         }
     }
 
+    // Cache decoder lock status once before the unmatch loop — checking
+    // the decoder's own lock state is more reliable than spectral peaks.
+    std::unordered_map<int, bool> decoderLocked;
+    for (auto& s : app.decoders.status())
+        decoderLocked[s.channelId] = s.locked;
+    if (app.dualMode)
+        for (auto& s : app.decodersB.status())
+            decoderLocked[s.channelId] = s.locked;
+
     for (auto& c : app.callHunterCands)
     {
         if (!c.matched)
         {
-            // Spawned decoders: don't mark as lost if the absolute signal level
-            // at this frequency is still strong (in case the peak was missed for
-            // any reason, e.g. baseline hasn't fully frozen).
             if (c.channelId >= 0)
             {
-                // Find the nearest bin and check absolute PSD vs baseline.
-                int bi = -1; double bd = 1e9;
+                // Primary check: the decoder's own lock status.
+                auto it = decoderLocked.find(c.channelId);
+                if (it != decoderLocked.end() && it->second)
+                    continue; // decoder is locked — signal is present
+                // Fallback: check PSD in a window of bins (±3 kHz) around
+                // the candidate frequency.  Average the difference and
+                // require at least a few bins to be strongly above baseline.
+                int aboveCnt = 0; int inWindow = 0;
                 for (int i = 0; i < v.curN; ++i)
                 {
-                    double d = std::abs(v.freqMHz[i] - c.freqMHz);
-                    if (d < bd) { bd = d; bi = i; }
+                    if (std::abs(v.freqMHz[i] - c.freqMHz) > 0.003)
+                        continue;
+                    inWindow++;
+                    float diff = v.avg[i] - app.callHunterBaseline[i];
+                    if (diff >= 3.0f) aboveCnt++;
                 }
-                if (bi >= 0 && (v.avg[bi] - app.callHunterBaseline[bi] >= 3.0f))
-                    continue; // signal still present — don't count as lost
+                if (inWindow > 0 && aboveCnt >= inWindow / 4)
+                    continue; // signal still visible in spectrum
             }
             c.confirmCount = 0;
             c.lostCount++;
         }
     }
 
-    const double kDecoderCover = 0.0010;
+    const double kDecoderCover = 0.0025;
     auto hasExistingDecoder = [&](double f) {
         for (auto& s : app.decoders.status())
             if (std::abs(s.freqMHz - f) < kDecoderCover) return true;
