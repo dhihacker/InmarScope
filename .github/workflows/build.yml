@@ -1,0 +1,58 @@
+name: Build InmarScope
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    defaults:
+      run:
+        shell: msys2 {0}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup MSYS2
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-glfw
+            mingw-w64-x86_64-rtl-sdr
+            mingw-w64-x86_64-hackrf
+            mingw-w64-x86_64-zstd
+            mingw-w64-x86_64-ogg
+            mingw-w64-x86_64-vorbis
+
+      - name: Configure
+        run: |
+          mkdir build
+          cd build
+          cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
+
+      - name: Build
+        run: |
+          cd build
+          ninja
+
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: InmarScope-Windows
+          path: |
+            build/*.exe
+            build/**/*.exe
+            build/*.dll
+            build/**/*.dll
