@@ -4,7 +4,6 @@ on:
   push:
     branches: [ main, master ]
   pull_request:
-    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
@@ -16,11 +15,8 @@ jobs:
         shell: msys2 {0}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
-        with:
-          submodules: recursive
-          fetch-depth: 0
 
       - name: Setup MSYS2
         uses: msys2/setup-msys2@v2
@@ -40,46 +36,31 @@ jobs:
             mingw-w64-x86_64-libvorbis
             mingw-w64-x86_64-sqlite3
 
-      - name: Show environment
+      - name: Show repository contents
         run: |
-          gcc --version
-          cmake --version
-          ninja --version
-          pkg-config --version
-
-      - name: Show repository layout
-        run: |
-          echo "===== Root ====="
+          pwd
           ls -la
-          echo
-          echo "===== third_party ====="
+          echo "=== third_party ==="
           ls -la third_party || true
-          echo
-          echo "===== libacars ====="
+          echo "=== libacars ==="
           ls -la third_party/libacars || true
-          echo
-          echo "===== .gitmodules ====="
+          echo "=== .gitmodules ==="
           cat .gitmodules || true
 
       - name: Configure
         run: |
           mkdir build
           cd build
-          cmake .. \
-            -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release
+          cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: |
           cd build
           ninja
 
-      - name: Upload binaries
+      - name: Upload
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: InmarScope-Windows
-          path: |
-            build/**/*.exe
-            build/**/*.dll
-            build/**/*.pdb
+          name: InmarScope
+          path: build
