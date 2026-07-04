@@ -2,9 +2,13 @@ name: Build InmarScope
 
 on:
   push:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
   pull_request:
-    branches: [ main, master ]
+    branches:
+      - main
+      - master
   workflow_dispatch:
 
 jobs:
@@ -16,7 +20,7 @@ jobs:
         shell: msys2 {0}
 
     steps:
-      - name: Checkout
+      - name: Checkout source
         uses: actions/checkout@v4
 
       - name: Setup MSYS2
@@ -33,26 +37,35 @@ jobs:
             mingw-w64-x86_64-rtl-sdr
             mingw-w64-x86_64-hackrf
             mingw-w64-x86_64-zstd
-            mingw-w64-x86_64-ogg
-            mingw-w64-x86_64-vorbis
+            mingw-w64-x86_64-libogg
+            mingw-w64-x86_64-libvorbis
+
+      - name: Show compiler versions
+        run: |
+          gcc --version
+          cmake --version
+          ninja --version
 
       - name: Configure
         run: |
-          mkdir build
+          mkdir -p build
           cd build
           cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release
 
       - name: Build
         run: |
           cd build
-          ninja
+          ninja -j$(nproc)
 
-      - name: Upload executable
+      - name: List build output
+        run: |
+          find build -type f
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: InmarScope-Windows
           path: |
-            build/*.exe
             build/**/*.exe
-            build/*.dll
             build/**/*.dll
+            build/**/*.pdb
